@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
         const ret = core.step(@ptrCast(ram_image), elapsedUs, instrs_per_flip);
         switch (ret) {
             0 => {},
-            1 => this_ccount.* += instrs_per_flip, // Sleep here?
+            1 => this_ccount.* +%= instrs_per_flip, // Sleep here?
             3 => instct = 0,
             0x7777 => return, // {} goto restart; //syscon code for restart
             0x5555 => {
@@ -100,7 +100,7 @@ fn control_load(core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
     switch (addy) {
         0x10000005 => return 0x60,
         0x1100bffc => return core.timerh,
-        0x1100bff8 => return core.timerh,
+        0x1100bff8 => return core.timerl,
         else => {
             // std.debug.print("CL: 0x{x:0>8}\n", .{addy});
         },

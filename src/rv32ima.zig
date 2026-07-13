@@ -17,29 +17,31 @@ pub inline fn store_1_byte(ofs: u32, val: u32, image: [*c]u8) void {
 }
 
 pub inline fn store_2_bytes(ofs: u32, val: u32, image: [*c]u8) void {
-    @as([*c]u16, @ptrCast(@alignCast(image + ofs))).* = @truncate(val);
+    @as(*align(1) u16, @ptrCast(image + ofs)).* = @truncate(val);
 }
 
 pub inline fn store_4_bytes(ofs: u32, val: u32, image: [*c]u8) void {
-    @as([*c]u32, @ptrCast(@alignCast(image + ofs))).* = val;
+    @as(*align(1) u32, @ptrCast(image + ofs)).* = val;
 }
+
 pub inline fn load_1_byte(ofs: u32, image: [*c]u8) u32 {
     return (image + ofs).*;
 }
+
 pub inline fn load_2_bytes(ofs: u32, image: [*c]u8) u32 {
-    return @intCast(@as([*c]u16, @ptrCast(@alignCast(image + ofs))).*);
+    return @as(*align(1) u16, @ptrCast(image + ofs)).*;
 }
 
 pub inline fn load_4_bytes(ofs: u32, image: [*c]u8) u32 {
-    return @intCast(@as([*c]u32, @ptrCast(@alignCast(image + ofs))).*);
+    return @as(*align(1) u32, @ptrCast(image + ofs)).*;
 }
 
 pub inline fn load_1_signed_byte(ofs: u32, image: [*c]u8) u32 {
-    return @intCast(@as([*c]i8, @ptrCast(@alignCast(image + ofs))).*);
+    return @bitCast(@as(i32, @as(*align(1) i8, @ptrCast(image + ofs)).*));
 }
 
 pub inline fn load_2_signed_bytes(ofs: u32, image: [*c]u8) u32 {
-    return @bitCast(@as(c_int, @as([*c]i16, @ptrCast(@alignCast(image + ofs))).*));
+    return @bitCast(@as(i32, @as(*align(1) i16, @ptrCast(image + ofs)).*));
 }
 
 pub const Handlers = struct {
@@ -384,7 +386,11 @@ pub const NanoRV32IMA = struct {
                                                     break;
                                                 },
                                                 @as(u32, 5) => {
-                                                    rval = if ((ir & @as(u32, 1073741824)) != 0) @as(u32, @bitCast(@as(c_int, @as(i32, @bitCast(@as(c_uint, @truncate(rs1))))))) >> @intCast(rs2 & @as(u32, 31)) else rs1 >> @intCast(rs2 & @as(u32, 31));
+                                                    const shift_amt: u5 = @intCast(rs2 & 31);
+                                                    rval = if ((ir & 1073741824) != 0)
+                                                        @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt)
+                                                    else
+                                                        rs1 >> shift_amt;
                                                     break;
                                                 },
                                                 @as(u32, 6) => {
