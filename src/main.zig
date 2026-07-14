@@ -3,13 +3,19 @@ const Io = std.Io;
 const default_64mb_dtb = @import("dtb.zig").default64mb;
 const rv32ima = @import("rv32ima.zig");
 
-const RAM_IMAGE_OFFSET: u32 = 0x80000000;
-
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    var gpa = init.gpa;
+    const gpa = init.gpa;
 
-    const linux = "test_img/buildroot.img";
+    const args = try init.minimal.args.toSlice(gpa);
+    defer gpa.free(args);
+
+    if (args.len < 2) {
+        std.debug.print("$emulator [bin file to run]\n", .{});
+        return;
+    }
+
+    const bin_file = args[1];
 
     const RAM_SIZE: u32 = 64 * 1024 * 1024;
 
@@ -18,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
 
     @memset(ram_image, 0);
 
-    _ = try std.Io.Dir.cwd().readFile(io, linux, ram_image);
+    _ = try std.Io.Dir.cwd().readFile(io, bin_file, ram_image);
 
     const dtb_offset: u32 = RAM_SIZE - default_64mb_dtb.len;
     @memcpy(ram_image[dtb_offset..], &default_64mb_dtb);
@@ -32,9 +38,9 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var core = rv32ima.NanoRV32IMA.init(RAM_SIZE, &handlers);
-    core.pc = RAM_IMAGE_OFFSET;
+    core.pc = rv32ima.RAM_IMAGE_OFFSET;
     core.regs[10] = 0x00;
-    core.regs[11] = RAM_IMAGE_OFFSET + dtb_offset;
+    core.regs[11] = rv32ima.RAM_IMAGE_OFFSET + dtb_offset;
     core.extraflags |= 3;
 
     const time_divisor: u32 = 1;
@@ -77,10 +83,21 @@ fn post_exec(core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, retval: u32) void {
     _ = pc;
     _ = ir;
     _ = retval;
+
+    // std.debug.print("PC: {x:0>8} | IR: {x:0>8}\n", .{ pc, ir });
 }
 
 fn control_store(core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
     switch (addy) {
+        0x80001000 => {
+            if (val == 1) {
+                std.debug.print("PASSED\n", .{});
+                std.process.exit(0);
+            } else {
+                std.debug.print("FAILED: {d}\n", .{val});
+                std.process.exit(1);
+            }
+        },
         0x10000000 => std.debug.print("{c}", .{@as(u8, @truncate(val))}),
         0x11004004 => core.timermatchh = val,
         0x11004000 => core.timermatchl = val,
@@ -89,7 +106,7 @@ fn control_store(core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
             return val;
         },
         else => {
-            // std.debug.print("CS: 0x{x:0>8}\n", .{addy});
+            std.debug.print("CS: 0x{x:0>8}\n", .{addy});
         },
     }
 
@@ -102,7 +119,7 @@ fn control_load(core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
         0x1100bffc => return core.timerh,
         0x1100bff8 => return core.timerl,
         else => {
-            // std.debug.print("CL: 0x{x:0>8}\n", .{addy});
+            std.debug.print("CL: 0x{x:0>8}\n", .{addy});
         },
     }
 
@@ -126,7 +143,7 @@ fn other_csr_read(core: *rv32ima.NanoRV32IMA, image: [*c]u8, csrno: u16) i32 {
 fn dump_states(core: *rv32ima.NanoRV32IMA, image: []u8) void {
     std.debug.print("PC: {x:0>8} ", .{core.pc});
 
-    const pc_offset = core.pc - RAM_IMAGE_OFFSET;
+    const pc_offset = core.pc - rv32ima.RAM_IMAGE_OFFSET;
     if (pc_offset >= 0 and pc_offset < core.ram_size - 3) {
         std.debug.print("[0x{x:0>8}] ", .{@as([*]u32, @ptrCast(@alignCast(image.ptr + pc_offset)))[0]});
     } else {
