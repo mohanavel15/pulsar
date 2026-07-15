@@ -79,12 +79,12 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn post_exec(core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, retval: u32) void {
-    _ = core;
-    _ = pc;
-    _ = ir;
-    _ = retval;
+    _ = &core;
+    _ = &pc;
+    _ = &ir;
+    _ = &retval;
 
-    // std.debug.print("PC: {x:0>8} | IR: {x:0>8}\n", .{ pc, ir });
+    // std.debug.print("PC: {x:0>8} | IR: {x:0>8} | RET: {x:0>8}\n", .{ pc, ir, retval });
 }
 
 fn control_store(core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
@@ -126,14 +126,14 @@ fn control_load(core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
     return 0;
 }
 
-fn other_csr_write(core: *rv32ima.NanoRV32IMA, image: [*c]u8, csrno: u16, value: u32) void {
+fn other_csr_write(core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16, value: u32) void {
     _ = core;
     _ = image;
     _ = csrno;
     _ = value;
 }
 
-fn other_csr_read(core: *rv32ima.NanoRV32IMA, image: [*c]u8, csrno: u16) i32 {
+fn other_csr_read(core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16) i32 {
     _ = core;
     _ = image;
     _ = csrno;

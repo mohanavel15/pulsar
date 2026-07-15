@@ -5,52 +5,50 @@ const std = @import("std");
 
 pub const __helpers = @import("std").zig.c_translation.helpers;
 
-pub export var INT32_MIN: c_int = -@as(c_int, 2147483647) - @as(c_int, 1);
-
 pub var RAM_IMAGE_OFFSET: u32 = 0x80000000;
 
 pub inline fn mmio_range(n: u32) bool {
     return 0x10000000 <= n and n < 0x12000000;
 }
 
-pub inline fn store_1_byte(ofs: u32, val: u32, image: [*c]u8) void {
-    (image + ofs).* = @truncate(val);
+pub inline fn store_1_byte(ofs: u32, val: u32, image: []u8) void {
+    (&image[ofs]).* = @truncate(val);
 }
 
-pub inline fn store_2_bytes(ofs: u32, val: u32, image: [*c]u8) void {
-    @as(*align(1) u16, @ptrCast(image + ofs)).* = @truncate(val);
+pub inline fn store_2_bytes(ofs: u32, val: u32, image: []u8) void {
+    @as(*align(1) u16, @ptrCast(&image[ofs])).* = @truncate(val);
 }
 
-pub inline fn store_4_bytes(ofs: u32, val: u32, image: [*c]u8) void {
-    @as(*align(1) u32, @ptrCast(image + ofs)).* = val;
+pub inline fn store_4_bytes(ofs: u32, val: u32, image: []u8) void {
+    @as(*align(1) u32, @ptrCast(&image[ofs])).* = val;
 }
 
-pub inline fn load_1_byte(ofs: u32, image: [*c]u8) u32 {
-    return (image + ofs).*;
+pub inline fn load_1_byte(ofs: u32, image: []u8) u32 {
+    return image[ofs];
 }
 
-pub inline fn load_2_bytes(ofs: u32, image: [*c]u8) u32 {
-    return @as(*align(1) u16, @ptrCast(image + ofs)).*;
+pub inline fn load_2_bytes(ofs: u32, image: []u8) u32 {
+    return @as(*align(1) u16, @ptrCast(&image[ofs])).*;
 }
 
-pub inline fn load_4_bytes(ofs: u32, image: [*c]u8) u32 {
-    return @as(*align(1) u32, @ptrCast(image + ofs)).*;
+pub inline fn load_4_bytes(ofs: u32, image: []u8) u32 {
+    return @as(*align(1) u32, @ptrCast(&image[ofs])).*;
 }
 
-pub inline fn load_1_signed_byte(ofs: u32, image: [*c]u8) u32 {
-    return @bitCast(@as(i32, @as(*align(1) i8, @ptrCast(image + ofs)).*));
+pub inline fn load_1_signed_byte(ofs: u32, image: []u8) u32 {
+    return @bitCast(@as(i32, @as(*align(1) i8, @ptrCast(&image[ofs])).*));
 }
 
-pub inline fn load_2_signed_bytes(ofs: u32, image: [*c]u8) u32 {
-    return @bitCast(@as(i32, @as(*align(1) i16, @ptrCast(image + ofs)).*));
+pub inline fn load_2_signed_bytes(ofs: u32, image: []u8) u32 {
+    return @bitCast(@as(i32, @as(*align(1) i16, @ptrCast(&image[ofs])).*));
 }
 
 pub const Handlers = struct {
     post_exec: *const fn (core: *NanoRV32IMA, pc: u32, ir: u32, retval: u32) void,
     control_store: *const fn (core: *NanoRV32IMA, addy: u32, val: u32) u32,
     control_load: *const fn (core: *NanoRV32IMA, addy: u32) u32,
-    other_csr_write: *const fn (core: *NanoRV32IMA, image: [*c]u8, csrno: u16, value: u32) void,
-    other_csr_read: *const fn (core: *NanoRV32IMA, image: [*c]u8, csrno: u16) i32,
+    other_csr_write: *const fn (core: *NanoRV32IMA, image: []u8, csrno: u16, value: u32) void,
+    other_csr_read: *const fn (core: *NanoRV32IMA, image: []u8, csrno: u16) i32,
 };
 
 pub const NanoRV32IMA = struct {
@@ -84,28 +82,29 @@ pub const NanoRV32IMA = struct {
         };
     }
 
-    pub fn step(self: *Self, image: [*c]u8, elapsedUs: u32, count: c_int) i32 {
+    pub fn step(self: *Self, image: []u8, elapsedUs: u32, count: u32) i32 {
         const new_timer: u32 = self.timerl +% elapsedUs;
-        if (new_timer < self.timerl) {
-            self.timerh +%= 1;
-        }
+        if (new_timer < self.timerl) self.timerh +%= 1;
         self.timerl = new_timer;
+
         if (((self.timerh > self.timermatchh) or ((self.timerh == self.timermatchh) and (self.timerl > self.timermatchl))) and ((self.timermatchh != 0) or (self.timermatchl != 0))) {
-            self.extraflags &= @bitCast(@as(c_int, ~@as(c_int, 4)));
-            self.mip |= @bitCast(@as(c_int, @as(c_int, 1) << 7));
+            self.extraflags &= ~@as(u32, 4);
+            self.mip |= @as(u32, 1 << 7);
         } else {
-            self.mip &= @bitCast(@as(c_int, ~(@as(c_int, 1) << 7)));
+            self.mip &= ~@as(u32, 1 << 7);
         }
+
         if ((self.extraflags & 4) != 0) return 1;
         var trap: u32 = 0;
         var rval: u32 = 0;
         var pc: u32 = self.pc;
         var cycle: u32 = self.cyclel;
+
         if ((@as(u32, @bitCast(@as(c_int, @intFromBool(((self.mip & @as(u32, @bitCast(@as(c_int, @as(c_int, 1) << 7)))) != 0) and ((self.mie & @as(u32, @bitCast(@as(c_int, @as(c_int, 1) << 7)))) != 0))))) != 0) and ((self.mstatus & 8) != 0)) {
             trap = 2147483655;
             pc -%= 4;
         } else {
-            var icount: c_int = 0;
+            var icount: u32 = 0;
             while (icount < count) : (icount += 1) {
                 var ir: u32 = 0;
                 rval = 0;
@@ -122,20 +121,17 @@ pub const NanoRV32IMA = struct {
                     var rdid: u32 = (ir >> 7) & 31;
 
                     switch (ir & 0x7F) {
-                        55 => rval = ir & @as(c_uint, 4294963200),
-                        23 => rval = pc +% (ir & @as(c_uint, 4294963200)),
-                        111 => {
-                            var reladdy: i32 = @bitCast(@as(c_uint, @truncate(((((ir & RAM_IMAGE_OFFSET) >> 11) | ((ir & @as(u32, 2145386496)) >> 20)) | ((ir & @as(u32, 1048576)) >> @intCast(@as(u32, 9)))) | (ir & @as(u32, 1044480)))));
-                            if ((reladdy & @as(c_int, 1048576)) != 0) {
-                                const ref = &reladdy;
-                                ref.* = @bitCast(@as(c_uint, @truncate(@as(c_uint, @bitCast(@as(c_int, ref.*))) | @as(c_uint, 4292870144))));
-                            }
+                        0x37 => rval = ir & 0xFFFFF000, // LUI (0b0110111)
+                        0x17 => rval = pc +% (ir & 0xFFFFF000), // AUIPC (0b0010111)
+                        0x6F => { // JAL (0b1101111)
+                            var reladdy: u32 = ((ir & 0x80000000) >> 11) | ((ir & 0x7fe00000) >> 20) | ((ir & 0x00100000) >> 9) | ((ir & 0x000ff000));
+                            if ((reladdy & 0x100000) != 0) reladdy |= 0xFFE00000;
                             rval = pc +% 4;
-                            pc = (pc +% @as(u32, @bitCast(@as(c_int, reladdy)))) -% 4;
+                            pc = pc +% reladdy -% 4;
                         },
                         103 => {
                             const imm: u32 = ir >> 20;
-                            const imm_se: i32 = @bitCast(@as(c_uint, @truncate(imm | (if ((imm & @as(u32, 2048)) != 0) @as(c_uint, 4294963200) else @as(c_uint, 0)))));
+                            const imm_se: i32 = @bitCast(@as(c_uint, @truncate(imm | (if ((imm & @as(u32, 2048)) != 0) 0xFFFFF000 else @as(c_uint, 0)))));
                             rval = pc +% 4;
                             pc = ((self.regs[(ir >> 15) & 31] +% @as(u32, @bitCast(@as(c_int, imm_se)))) & @as(u32, @bitCast(@as(c_int, ~@as(c_int, 1))))) -% 4;
                         },
@@ -177,7 +173,7 @@ pub const NanoRV32IMA = struct {
                         3 => {
                             const rs1: u32 = self.regs[(ir >> 15) & 31];
                             const imm: u32 = ir >> 20;
-                            const imm_se: i32 = @bitCast(@as(c_uint, @truncate(imm | (if ((imm & @as(u32, 2048)) != 0) @as(c_uint, 4294963200) else @as(c_uint, 0)))));
+                            const imm_se: i32 = @bitCast(@as(c_uint, @truncate(imm | (if ((imm & @as(u32, 2048)) != 0) 0xFFFFF000 else @as(c_uint, 0)))));
                             var rsval: u32 = rs1 +% @as(u32, @bitCast(imm_se));
                             rsval -%= RAM_IMAGE_OFFSET;
                             if (rsval >= (self.ram_size - 3)) {
@@ -231,14 +227,14 @@ pub const NanoRV32IMA = struct {
                                 }
                             }
                         },
-                        19, 51 => {
+                        0x13, 0x33 => {
                             var imm: u32 = ir >> 20;
-                            imm = imm | (if ((imm & @as(u32, 2048)) != 0) @as(c_uint, 4294963200) else @as(c_uint, 0));
+                            imm = imm | (if ((imm & @as(u32, 2048)) != 0) 0xFFFFF000 else @as(c_uint, 0));
                             const rs1: u32 = self.regs[(ir >> 15) & 31];
                             const is_reg: u32 = @bitCast(@as(c_int, @intFromBool(!!((ir & @as(u32, 32)) != 0))));
                             const rs2: u32 = if (is_reg != 0) self.regs[imm & 31] else imm;
                             if ((is_reg != 0) and ((ir & @as(u32, 33554432)) != 0)) {
-                                switch ((ir >> @intCast(@as(u32, 12))) & @as(u32, 7)) {
+                                switch ((ir >> 12) & 7) {
                                     0 => rval = rs1 *% rs2,
                                     1 => rval = @bitCast(@as(c_int, @truncate((@as(i64, @as(i32, @bitCast(@as(c_uint, @truncate(rs1))))) * @as(i64, @as(i32, @bitCast(@as(c_uint, @truncate(rs2)))))) >> @intCast(@as(i64, 32))))),
                                     2 => rval = @truncate((@as(u64, @bitCast(@as(c_long, @as(i64, @as(i32, @bitCast(@as(c_uint, @truncate(rs1)))))))) *% @as(u64, rs2)) >> @intCast(@as(u64, 32))),
@@ -246,7 +242,7 @@ pub const NanoRV32IMA = struct {
                                     4 => if (rs2 == 0) {
                                         rval = @bitCast(@as(c_int, -@as(c_int, 1)));
                                     } else {
-                                        rval = if ((@as(i32, @bitCast(@as(c_uint, @truncate(rs1)))) == INT32_MIN) and (@as(i32, @bitCast(@as(c_uint, @truncate(rs2)))) == -@as(c_int, 1))) rs1 else @as(u32, @bitCast(@as(c_int, @divTrunc(@as(i32, @bitCast(@as(c_uint, @truncate(rs1)))), @as(i32, @bitCast(@as(c_uint, @truncate(rs2))))))));
+                                        rval = if ((@as(i32, @bitCast(rs1)) == std.math.minInt(i32)) and (@as(i32, @bitCast(@as(c_uint, @truncate(rs2)))) == -@as(c_int, 1))) rs1 else @as(u32, @bitCast(@as(c_int, @divTrunc(@as(i32, @bitCast(@as(c_uint, @truncate(rs1)))), @as(i32, @bitCast(@as(c_uint, @truncate(rs2))))))));
                                     },
                                     5 => if (rs2 == 0) {
                                         rval = 4294967295;
@@ -256,7 +252,7 @@ pub const NanoRV32IMA = struct {
                                     6 => if (rs2 == 0) {
                                         rval = rs1;
                                     } else {
-                                        rval = if ((@as(i32, @bitCast(@as(c_uint, @truncate(rs1)))) == INT32_MIN) and (@as(i32, @bitCast(@as(c_uint, @truncate(rs2)))) == -@as(c_int, 1))) 0 else @as(u32, @bitCast(@as(c_int, __helpers.signedRemainder(@as(i32, @bitCast(@as(c_uint, @truncate(rs1)))), @as(i32, @bitCast(@as(c_uint, @truncate(rs2))))))));
+                                        rval = if ((@as(i32, @bitCast(rs1)) == std.math.minInt(i32)) and (@as(i32, @bitCast(@as(c_uint, @truncate(rs2)))) == -@as(c_int, 1))) 0 else @as(u32, @bitCast(@as(c_int, __helpers.signedRemainder(@as(i32, @bitCast(@as(c_uint, @truncate(rs1)))), @as(i32, @bitCast(@as(c_uint, @truncate(rs2))))))));
                                     },
                                     7 => if (rs2 == 0) {
                                         rval = rs1;
@@ -285,53 +281,66 @@ pub const NanoRV32IMA = struct {
                                 }
                             }
                         },
-                        15 => rdid = 0,
-                        115 => {
+                        0x0F => rdid = 0,
+                        0x73 => { // Zifencei+Zicsr  (0b1110011)
                             const csrno: u32 = ir >> 20;
-                            const microop: u32 = (ir >> @intCast(@as(u32, 12))) & @as(u32, 7);
+                            const microop: u32 = (ir >> 12) & 7;
                             if ((microop & 3) != 0) {
-                                const rs1imm: c_int = @bitCast(@as(c_uint, @truncate((ir >> 15) & 31)));
-                                const rs1: u32 = self.regs[@bitCast(@as(isize, @intCast(rs1imm)))];
+                                const rs1imm: u32 = (ir >> 15) & 31;
+                                const rs1: u32 = self.regs[rs1imm];
                                 var writeval: u32 = rs1;
 
                                 rval = switch (csrno) {
-                                    832 => self.mscratch,
-                                    773 => self.mtvec,
-                                    772 => self.mie,
-                                    3072 => cycle,
-                                    836 => self.mip,
-                                    833 => self.mepc,
-                                    768 => self.mstatus,
-                                    834 => self.mcause,
-                                    835 => self.mtval,
-                                    3857 => 4279234815,
-                                    769 => 1077940481,
+                                    0x340 => self.mscratch,
+                                    0x305 => self.mtvec,
+                                    0x304 => self.mie,
+                                    0xC00 => cycle,
+                                    0x344 => self.mip,
+                                    0x341 => self.mepc,
+                                    0x300 => self.mstatus,
+                                    0x342 => self.mcause,
+                                    0x343 => self.mtval,
+                                    0xF11 => 0xFF0FF0FF, //mvendorid
+                                    0x301 => 0x40401101, //misa (XLEN=32, IMA+X)
+                                    // 0x3B0 => 0, //pmpaddr0
+                                    // 0x3a0 => 0, //pmpcfg0
+                                    // 0xF12 => 0x00000000, //marchid
+                                    // 0xF13 => 0x00000000, //mimpid
+                                    // 0xF14 => 0x00000000, //mhartid
                                     else => @bitCast(self.handlers.other_csr_read(self, image, @truncate(csrno))),
                                 };
 
                                 writeval = switch (microop) {
-                                    2 => rval | rs1,
-                                    3 => rval & ~rs1,
-                                    5 => @bitCast(rs1imm),
-                                    6 => rval | @as(u32, @bitCast(@as(c_int, rs1imm))),
-                                    7 => rval & @as(u32, @bitCast(@as(c_int, ~rs1imm))),
-                                    else => rs1,
+                                    1 => rs1, //CSRRW
+                                    2 => rval | rs1, //CSRRS
+                                    3 => rval & ~rs1, //CSRRC
+                                    5 => rs1imm, //CSRRWI
+                                    6 => rval | rs1imm, //CSRRSI
+                                    7 => rval & ~rs1imm, //CSRRCI
+                                    else => unreachable,
                                 };
 
                                 switch (csrno) {
-                                    832 => self.mscratch = writeval,
-                                    773 => self.mtvec = writeval,
-                                    772 => self.mie = writeval,
-                                    836 => self.mip = writeval,
-                                    833 => self.mepc = writeval,
-                                    768 => self.mstatus = writeval,
-                                    834 => self.mcause = writeval,
-                                    835 => self.mtval = writeval,
+                                    0x340 => self.mscratch = writeval,
+                                    0x305 => self.mtvec = writeval,
+                                    0x304 => self.mie = writeval,
+                                    0x344 => self.mip = writeval,
+                                    0x341 => self.mepc = writeval,
+                                    0x300 => self.mstatus = writeval,
+                                    0x342 => self.mcause = writeval,
+                                    0x343 => self.mtval = writeval,
+                                    // case 0x3a0: {}, //pmpcfg0
+                                    // case 0x3B0: {}, //pmpaddr0
+                                    // case 0xF11: {}, //mvendorid
+                                    // case 0xF12: {}, //marchid
+                                    // case 0xF13: {}, //mimpid
+                                    // case 0xF14: {}, //mhartid
+                                    // case 0x301: {}, //misa
                                     else => self.handlers.other_csr_write(self, image, @truncate(csrno), writeval),
                                 }
-                            } else if (microop == 0) {
+                            } else if (microop == 0x0) { // "SYSTEM" 0b000
                                 rdid = 0;
-                                if ((csrno & 0xFF) == 2) {
+                                if ((csrno & 0xFF) == 2) { // MRET
                                     const startmstatus: u32 = self.mstatus;
                                     const startextraflags: u32 = self.extraflags;
 
@@ -364,7 +373,7 @@ pub const NanoRV32IMA = struct {
                                 trap = 2 + 1;
                             }
                         },
-                        47 => {
+                        0x2F => { // RV32A (0b00101111)
                             var rs1: u32 = self.regs[(ir >> 15) & 31];
                             var rs2: u32 = self.regs[(ir >> 20) & 31];
                             const irmid: u32 = (ir >> 27) & 31;
@@ -377,14 +386,13 @@ pub const NanoRV32IMA = struct {
                             } else {
                                 rval = load_4_bytes(rs1, image);
                                 var dowrite: u32 = 1;
-
                                 switch (irmid) {
                                     2 => {
                                         dowrite = 0;
                                         self.extraflags = (self.extraflags & 7) | (rs1 << 3);
                                     },
                                     3 => {
-                                        rval = @bitCast(@as(c_int, @intFromBool((self.extraflags >> 3) != (rs1 & @as(u32, 536870911)))));
+                                        rval = @intFromBool((self.extraflags >> 3) != (rs1 & 0x1FFFFFFF));
                                         dowrite = @intFromBool(rval == 0);
                                     },
                                     1 => {},
@@ -421,8 +429,9 @@ pub const NanoRV32IMA = struct {
                 pc +%= 4;
             }
         }
+
         if (trap != 0) {
-            if ((trap & RAM_IMAGE_OFFSET) != 0) {
+            if ((trap & 0x80000000) != 0) { // If prefixed with 1 in MSB, it's an interrupt, not a trap.
                 self.mcause = trap;
                 self.mtval = 0;
                 pc +%= 4;
@@ -439,9 +448,7 @@ pub const NanoRV32IMA = struct {
             pc +%= 4;
         }
 
-        if (self.cyclel > cycle) {
-            self.cycleh +%= 1;
-        }
+        if (self.cyclel > cycle) self.cycleh +%= 1;
 
         self.cyclel = cycle;
         self.pc = pc;
