@@ -21,7 +21,7 @@ def main():
                 [EMULATOR, file],
                 capture_output=True,
                 text=True,
-                timeout=2 
+                timeout=2
             )
             
             if result.returncode == 0:
@@ -31,7 +31,7 @@ def main():
                 failed += 1
                 
         except subprocess.TimeoutExpired:
-            print(f"[HANG] {test_name} -  STDERR: {result.stderr}", end="")
+            print(f"[HANG] {test_name}")
             failed += 1
 
     print(f"{passed}/{total} PASSED - {failed}/{total} FAILED")

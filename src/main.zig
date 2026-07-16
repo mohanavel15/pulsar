@@ -37,11 +37,9 @@ pub fn main(init: std.process.Init) !void {
         .post_exec = &post_exec,
     };
 
-    var core = rv32ima.NanoRV32IMA.init(RAM_SIZE, &handlers);
-    core.pc = rv32ima.RAM_IMAGE_OFFSET;
+    var core = rv32ima.NanoRV32IMA.init(&handlers, ram_image);
     core.regs[10] = 0x00;
     core.regs[11] = rv32ima.RAM_IMAGE_OFFSET + dtb_offset;
-    core.extraflags |= 3;
 
     const time_divisor: u32 = 1;
     const instrs_per_flip: u32 = 1024;
@@ -61,7 +59,7 @@ pub fn main(init: std.process.Init) !void {
             dump_states(&core, ram_image);
         }
 
-        const ret = core.step(@ptrCast(ram_image), elapsedUs, instrs_per_flip);
+        const ret = core.step(elapsedUs, instrs_per_flip);
         switch (ret) {
             0 => {},
             1 => this_ccount.* +%= instrs_per_flip, // Sleep here?
@@ -102,11 +100,11 @@ fn control_store(core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
         0x11004004 => core.timermatchh = val,
         0x11004000 => core.timermatchl = val,
         0x11100000 => {
-            core.pc = core.pc + 4;
+            core.pc +%= 4;
             return val;
         },
         else => {
-            std.debug.print("CS: 0x{x:0>8}\n", .{addy});
+            // std.debug.print("CS: 0x{x:0>8}\n", .{addy});
         },
     }
 
@@ -119,7 +117,7 @@ fn control_load(core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
         0x1100bffc => return core.timerh,
         0x1100bff8 => return core.timerl,
         else => {
-            std.debug.print("CL: 0x{x:0>8}\n", .{addy});
+            // std.debug.print("CL: 0x{x:0>8}\n", .{addy});
         },
     }
 
