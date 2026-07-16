@@ -76,13 +76,13 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn post_exec(core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, retval: u32) void {
+fn post_exec(core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, trap: ?rv32ima.Traps) void {
     _ = &core;
     _ = &pc;
     _ = &ir;
-    _ = &retval;
+    _ = &trap;
 
-    // std.debug.print("PC: {x:0>8} | IR: {x:0>8} | RET: {x:0>8}\n", .{ pc, ir, retval });
+    // std.debug.print("PC: {x:0>8} | IR: {x:0>8} | TRAP: {s}\n", .{ pc, ir, if (trap) |t| @tagName(t) else "null" });
 }
 
 fn control_store(core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
