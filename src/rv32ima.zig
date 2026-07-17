@@ -22,9 +22,22 @@ pub inline fn load_signed(T: type, ofs: u32, ptr: []u8) u32 {
 }
 
 const Opcodes = struct {
+    const OP_IMMEDIATE: u32 = 0x13;
+    const OP_or_MULDIV: u32 = 0x33;
     const FENCE_I: u32 = 0x0F;
     const CSR: u32 = 0x73;
     const AMO: u32 = 0x2F; // RV32A
+};
+
+const OP = struct {
+    const ADD_or_SUB: u32 = 0;
+    const SLT: u32 = 2;
+    const SLTU: u32 = 3;
+    const XOR: u32 = 4;
+    const OR: u32 = 6;
+    const AND: u32 = 7;
+    const SLL: u32 = 1;
+    const SRL_or_SRA: u32 = 5;
 };
 
 const MULDIV = struct {
@@ -256,11 +269,11 @@ pub const NanoRV32IMA = struct {
                                     0 => store(u8, addy, rs2, self.ram),
                                     1 => store(u16, addy, rs2, self.ram),
                                     2 => store(u32, addy, rs2, self.ram),
-                                    else => trap = 2 + 1,
+                                    else => trap = .illegal_instruction,
                                 }
                             }
                         },
-                        0x13, 0x33 => { // Op-immediate 0b0010011, // Op 0b0110011
+                        Opcodes.OP_IMMEDIATE, Opcodes.OP_or_MULDIV => {
                             var imm: u32 = ir >> 20;
                             imm |= @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
 
@@ -284,11 +297,7 @@ pub const NanoRV32IMA = struct {
                                             rval = @as(u32, @bitCast(@divTrunc(@as(i32, @bitCast(rs1)), @as(i32, @bitCast(rs2)))));
                                         }
                                     },
-                                    MULDIV.DIVU => if (rs2 == 0) {
-                                        rval = 0xFFFFFFFF;
-                                    } else {
-                                        rval = rs1 / rs2;
-                                    },
+                                    MULDIV.DIVU => rval = if (rs2 == 0) 0xFFFFFFFF else rs1 / rs2,
                                     MULDIV.REM => if (rs2 == 0) {
                                         rval = rs1;
                                     } else {
@@ -303,16 +312,31 @@ pub const NanoRV32IMA = struct {
                                 }
                             } else {
                                 const shift_amt: u5 = @intCast(rs2 & 0x1F);
+                                const rs2_rest = rs2 >> 5;
 
                                 rval = switch ((ir >> 12) & 7) {
-                                    0 => if ((is_reg) and ((ir & @as(u32, 0x40000000)) != 0)) rs1 -% rs2 else rs1 +% rs2,
-                                    1 => rs1 << shift_amt,
-                                    2 => @intFromBool(@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))),
-                                    3 => @intFromBool(rs1 < rs2),
-                                    4 => rs1 ^ rs2,
-                                    5 => if ((ir & 0x40000000) != 0) @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt) else rs1 >> shift_amt,
-                                    6 => rs1 | rs2,
-                                    7 => rs1 & rs2,
+                                    OP.ADD_or_SUB => if ((is_reg) and ((ir & @as(u32, 0x40000000)) != 0)) rs1 -% rs2 else rs1 +% rs2,
+                                    OP.SLT => @intFromBool(@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))),
+                                    OP.SLTU => @intFromBool(rs1 < rs2),
+                                    OP.XOR => rs1 ^ rs2,
+                                    OP.OR => rs1 | rs2,
+                                    OP.AND => rs1 & rs2,
+                                    OP.SLL => blk: {
+                                        if (!is_reg and rs2_rest != 0) {
+                                            trap = .illegal_instruction;
+                                            break :blk rval;
+                                        }
+
+                                        break :blk rs1 << shift_amt;
+                                    },
+                                    OP.SRL_or_SRA => blk: {
+                                        if (!is_reg and rs2_rest != 0 and rs2_rest != 0x20) {
+                                            trap = .illegal_instruction;
+                                            break :blk rval;
+                                        }
+
+                                        break :blk if ((ir & 0x40000000) != 0) @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt) else rs1 >> shift_amt;
+                                    },
                                     else => unreachable,
                                 };
                             }

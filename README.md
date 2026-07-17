@@ -4,7 +4,7 @@ Tiny RISC-V emulator translated from C to Zig
 This project is Zig translation of [cnlohr/mini-rv32ima](https://github.com/cnlohr/mini-rv32ima)
 
 ## Current State
-The emulator currently passes 70/76 IMA test in [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
+The emulator currently passes 71/76 IMA test in [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
 ```
 $ python tests.py
 Found 76 tests in the test directory.
@@ -12,10 +12,9 @@ Found 76 tests in the test directory.
 [FAIL] rv32mi-p-illegal - STDERR: FAILED: 5
 [FAIL] rv32mi-p-ma_fetch - STDERR: FAILED: 5
 [FAIL] rv32mi-p-pmpaddr - STDERR: FAILED: 3
-[FAIL] rv32mi-p-shamt - STDERR: FAILED: 7
 [FAIL] rv32ua-p-lrsc - STDERR: FAILED: 13
-[HANG] rv32ui-p-ld_st -  STDERR: PASSED
-70/76 PASSED - 6/76 FAILED
+[HANG] rv32ui-p-ld_st
+71/76 PASSED - 5/76 FAILED
 ```
 
 * The tests are filered by `rv32(m|u)(i|m|a)-p-*` to only included IMA tests.
