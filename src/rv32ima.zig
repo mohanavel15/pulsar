@@ -112,6 +112,7 @@ pub const NanoRV32IMA = struct {
     mtval: u32 = 0,
     mcause: u32 = 0,
     extraflags: u32 = 3, // Machine Mode
+    reserved_addr: u32 = 0xFFFFFFFF,
 
     handlers: *Handlers,
     ram: []u8,
@@ -449,11 +450,12 @@ pub const NanoRV32IMA = struct {
                                 switch (irmid) {
                                     AMO.LR => {
                                         dowrite = 0;
-                                        self.extraflags = (self.extraflags & 7) | (rs1 << 3);
+                                        self.reserved_addr = rs1;
                                     },
                                     AMO.SC => {
-                                        rval = @intFromBool((self.extraflags >> 3) != (rs1 & 0x1FFFFFFF));
+                                        rval = @intFromBool(self.reserved_addr != rs1);
                                         dowrite = @intFromBool(rval == 0);
+                                        self.reserved_addr = 0xFFFFFFFF;
                                     },
                                     AMO.SWAP => {},
                                     AMO.ADD => rs2 +%= rval,
