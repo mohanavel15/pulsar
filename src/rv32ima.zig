@@ -26,7 +26,7 @@ const Opcodes = struct {
     const OP_or_MULDIV: u32 = 0x33;
     const FENCE_I: u32 = 0x0F;
     const CSR: u32 = 0x73;
-    const AMO: u32 = 0x2F; // RV32A
+    const AMO: u32 = 0x2F;
 };
 
 const OP = struct {
@@ -94,6 +94,11 @@ pub const Handlers = struct {
     other_csr_read: *const fn (core: *NanoRV32IMA, ptr: []u8, csrno: u16) i32,
 };
 
+pub const Mode = enum {
+    user,
+    machine,
+};
+
 pub const NanoRV32IMA = struct {
     regs: [32]u32 = std.mem.zeroes([32]u32),
     pc: u32 = RAM_IMAGE_OFFSET,
@@ -111,7 +116,9 @@ pub const NanoRV32IMA = struct {
     mepc: u32 = 0,
     mtval: u32 = 0,
     mcause: u32 = 0,
-    extraflags: u32 = 3, // Machine Mode
+
+    mode: Mode = .user,
+    wfi: bool = false,
     reserved_addr: u32 = 0xFFFFFFFF,
 
     handlers: *Handlers,
@@ -132,20 +139,19 @@ pub const NanoRV32IMA = struct {
         self.timerl = new_timer;
 
         if (((self.timerh > self.timermatchh) or ((self.timerh == self.timermatchh) and (self.timerl > self.timermatchl))) and ((self.timermatchh != 0) or (self.timermatchl != 0))) {
-            self.extraflags &= ~@as(u32, 4);
+            self.wfi = false;
             self.mip |= @as(u32, 1 << 7);
         } else {
             self.mip &= ~@as(u32, 1 << 7);
         }
 
-        if ((self.extraflags & 4) != 0) return 1;
+        if (self.wfi) return 1;
         var trap: ?Traps = null;
         var rval: u32 = 0;
         var pc: u32 = self.pc;
         var cycle: u32 = self.cyclel;
 
         if ((self.mip & (1 << 7)) != 0 and (self.mie & (1 << 7)) != 0 and (self.mstatus & 0x8) != 0) {
-            // Timer interrupt.
             trap = .machine_timer_interrupt;
             pc -%= 4;
         } else {
@@ -403,19 +409,16 @@ pub const NanoRV32IMA = struct {
                                 rd = 0;
                                 if ((csrno & 0xFF) == 2) { // MRET
                                     const startmstatus: u32 = self.mstatus;
-                                    const startextraflags: u32 = self.extraflags;
-
-                                    self.mstatus = ((startmstatus & 0x80) >> 4) | ((startextraflags & 3) << 11) | 0x80;
-                                    self.extraflags = (startextraflags & ~@as(u32, 3)) | ((startmstatus >> 11) & 3);
-
+                                    self.mstatus = ((startmstatus & 0x80) >> 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0) | 0x80;
+                                    self.mode = if (((startmstatus >> 11) & 3) != 0) .machine else .user;
                                     pc = self.mepc -% 4;
                                 } else {
                                     switch (csrno) {
-                                        0 => trap = if ((self.extraflags & 3) != 0) .environment_call_from_M_mode else .environment_call_from_U_mode,
+                                        0 => trap = if (self.mode == .machine) .environment_call_from_M_mode else .environment_call_from_U_mode,
                                         1 => trap = .breakpoint,
                                         261 => {
                                             self.mstatus |= 8;
-                                            self.extraflags |= 4;
+                                            self.wfi = true;
                                             if (self.cyclel > cycle) {
                                                 self.cycleh +%= 1;
                                             }
@@ -504,9 +507,9 @@ pub const NanoRV32IMA = struct {
             }
 
             self.mepc = pc;
-            self.mstatus = ((self.mstatus & 8) << 4) | ((self.extraflags & 3) << 11);
+            self.mstatus = ((self.mstatus & 8) << 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0);
             pc = self.mtvec -% 4;
-            self.extraflags |= 3;
+            self.mode = .machine;
             trap = null;
             pc +%= 4;
         }
