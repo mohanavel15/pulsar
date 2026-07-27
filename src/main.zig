@@ -29,15 +29,9 @@ pub fn main(init: std.process.Init) !void {
     const dtb_offset: u32 = RAM_SIZE - default_64mb_dtb.len;
     @memcpy(ram_image[dtb_offset..], &default_64mb_dtb);
 
-    var handlers = rv32ima.Handlers{
-        .control_load = &control_load,
-        .control_store = &control_store,
-        .other_csr_read = &other_csr_read,
-        .other_csr_write = &other_csr_write,
-        .post_exec = &post_exec,
-    };
+    var handlers = DefaultHandler{};
 
-    var core = rv32ima.NanoRV32IMA.init(&handlers, ram_image);
+    var core = rv32ima.NanoRV32IMA.init(handlers.handlers(), ram_image);
     core.regs[10] = 0x00;
     core.regs[11] = rv32ima.RAM_IMAGE_OFFSET + dtb_offset;
 
@@ -76,67 +70,84 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn post_exec(core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, trap: ?rv32ima.Traps) void {
-    _ = &core;
-    _ = &pc;
-    _ = &ir;
-    _ = &trap;
+const DefaultHandler = struct {
+    const Self = @This();
 
-    // std.debug.print("PC: {x:0>8} | IR: {x:0>8} | TRAP: {s}\n", .{ pc, ir, if (trap) |t| @tagName(t) else "null" });
-}
+    fn post_exec(_: *anyopaque, core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, trap: ?rv32ima.Traps) void {
+        _ = &core;
+        _ = &pc;
+        _ = &ir;
+        _ = &trap;
 
-fn control_store(core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
-    switch (addy) {
-        0x80001000 => {
-            if (val == 1) {
-                std.debug.print("PASSED\n", .{});
-                std.process.exit(0);
-            } else {
-                std.debug.print("FAILED: {d}\n", .{val});
-                std.process.exit(1);
-            }
-        },
-        0x10000000 => std.debug.print("{c}", .{@as(u8, @truncate(val))}),
-        0x11004004 => core.timermatchh = val,
-        0x11004000 => core.timermatchl = val,
-        0x11100000 => {
-            core.pc +%= 4;
-            return val;
-        },
-        else => {
-            // std.debug.print("CS: 0x{x:0>8}\n", .{addy});
-        },
+        // std.debug.print("PC: {x:0>8} | IR: {x:0>8} | TRAP: {s}\n", .{ pc, ir, if (trap) |t| @tagName(t) else "null" });
     }
 
-    return 0;
-}
+    fn control_store(_: *anyopaque, core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
+        switch (addy) {
+            0x80001000 => {
+                if (val == 1) {
+                    std.debug.print("PASSED\n", .{});
+                    std.process.exit(0);
+                } else {
+                    std.debug.print("FAILED: {d}\n", .{val});
+                    std.process.exit(1);
+                }
+            },
+            0x10000000 => std.debug.print("{c}", .{@as(u8, @truncate(val))}),
+            0x11004004 => core.timermatchh = val,
+            0x11004000 => core.timermatchl = val,
+            0x11100000 => {
+                core.pc +%= 4;
+                return val;
+            },
+            else => {
+                // std.debug.print("CS: 0x{x:0>8}\n", .{addy});
+            },
+        }
 
-fn control_load(core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
-    switch (addy) {
-        0x10000005 => return 0x60,
-        0x1100bffc => return core.timerh,
-        0x1100bff8 => return core.timerl,
-        else => {
-            // std.debug.print("CL: 0x{x:0>8}\n", .{addy});
-        },
+        return 0;
     }
 
-    return 0;
-}
+    fn control_load(_: *anyopaque, core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
+        switch (addy) {
+            0x10000005 => return 0x60,
+            0x1100bffc => return core.timerh,
+            0x1100bff8 => return core.timerl,
+            else => {
+                // std.debug.print("CL: 0x{x:0>8}\n", .{addy});
+            },
+        }
 
-fn other_csr_write(core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16, value: u32) void {
-    _ = core;
-    _ = image;
-    _ = csrno;
-    _ = value;
-}
+        return 0;
+    }
 
-fn other_csr_read(core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16) i32 {
-    _ = core;
-    _ = image;
-    _ = csrno;
-    return 0;
-}
+    fn other_csr_write(_: *anyopaque, core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16, value: u32) void {
+        _ = core;
+        _ = image;
+        _ = csrno;
+        _ = value;
+    }
+
+    fn other_csr_read(_: *anyopaque, core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16) i32 {
+        _ = core;
+        _ = image;
+        _ = csrno;
+        return 0;
+    }
+
+    fn handlers(self: *Self) rv32ima.Handlers {
+        return rv32ima.Handlers{
+            .context = self,
+            .vtable = .{
+                .post_exec = Self.post_exec,
+                .control_load = Self.control_load,
+                .control_store = Self.control_store,
+                .other_csr_read = Self.other_csr_read,
+                .other_csr_write = Self.other_csr_write,
+            },
+        };
+    }
+};
 
 fn dump_states(core: *rv32ima.NanoRV32IMA, image: []u8) void {
     std.debug.print("PC: {x:0>8} ", .{core.pc});

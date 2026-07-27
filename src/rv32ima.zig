@@ -87,11 +87,36 @@ pub const Traps = enum(u32) {
 };
 
 pub const Handlers = struct {
-    post_exec: *const fn (core: *NanoRV32IMA, pc: u32, ir: u32, trap: ?Traps) void,
-    control_store: *const fn (core: *NanoRV32IMA, addy: u32, val: u32) u32,
-    control_load: *const fn (core: *NanoRV32IMA, addy: u32) u32,
-    other_csr_write: *const fn (core: *NanoRV32IMA, ptr: []u8, csrno: u16, value: u32) void,
-    other_csr_read: *const fn (core: *NanoRV32IMA, ptr: []u8, csrno: u16) i32,
+    ptr: *anyopaque,
+    vtable: struct {
+        post_exec: *const fn (ptr: *anyopaque, core: *NanoRV32IMA, pc: u32, ir: u32, trap: ?Traps) void,
+        control_store: *const fn (ptr: *anyopaque, core: *NanoRV32IMA, addy: u32, val: u32) u32,
+        control_load: *const fn (ptr: *anyopaque, core: *NanoRV32IMA, addy: u32) u32,
+        other_csr_write: *const fn (ptr: *anyopaque, core: *NanoRV32IMA, ptr: []u8, csrno: u16, value: u32) void,
+        other_csr_read: *const fn (ptr: *anyopaque, core: *NanoRV32IMA, ptr: []u8, csrno: u16) i32,
+    },
+
+    const Self = @This();
+
+    pub fn post_exec(self: *Self, core: *NanoRV32IMA, pc: u32, ir: u32, trap: ?Traps) void {
+        self.vtable.post_exec(self.ptr, core, pc, ir, trap);
+    }
+
+    pub fn control_store(self: *Self, core: *NanoRV32IMA, addy: u32, val: u32) u32 {
+        return self.vtable.control_store(self.ptr, core, addy, val);
+    }
+
+    pub fn control_load(self: *Self, core: *NanoRV32IMA, addy: u32) u32 {
+        return self.vtable.control_load(self.ptr, core, addy);
+    }
+
+    pub fn other_csr_write(self: *Self, core: *NanoRV32IMA, ptr: []u8, csrno: u16, value: u32) void {
+        self.vtable.other_csr_write(self.ptr, core, ptr, csrno, value);
+    }
+
+    pub fn other_csr_read(self: *Self, core: *NanoRV32IMA, ptr: []u8, csrno: u16) i32 {
+        return self.vtable.other_csr_read(self.ptr, core, ptr, csrno);
+    }
 };
 
 pub const Mode = enum {
@@ -121,12 +146,12 @@ pub const NanoRV32IMA = struct {
     wfi: bool = false,
     reserved_addr: u32 = 0xFFFFFFFF,
 
-    handlers: *Handlers,
+    handlers: Handlers,
     ram: []u8,
 
     const Self = @This();
 
-    pub fn init(handlers: *Handlers, ram: []u8) Self {
+    pub fn init(handlers: Handlers, ram: []u8) Self {
         return Self{
             .handlers = handlers,
             .ram = ram,
