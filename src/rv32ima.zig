@@ -71,7 +71,6 @@ const OP = struct {
 };
 
 const MULDIV = struct {
-    // riscv unprivileged spec: 13.2. "Zalrsc" Extension for Load-Reserved/Store-Conditional Instructions
     const MUL: u32 = 0;
     const MULH: u32 = 1;
     const MULHSU: u32 = 2;
@@ -114,6 +113,11 @@ pub const Traps = enum(u32) {
 
     //riscv privileged spec: 21.6.1. Trap Cause Codes
     machine_timer_interrupt = 0x80000007,
+};
+
+const Result = struct {
+    retval: u32,
+    trap: ?Traps,
 };
 
 pub const Handlers = struct {
@@ -337,42 +341,17 @@ pub const NanoRV32IMA = struct {
                             }
                         },
                         Opcodes.OP_IMMEDIATE, Opcodes.OP_or_MULDIV => {
-                            var imm: u32 = ir.i_imm();
-                            imm |= @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
-
-                            const rs1: u32 = self.regs[ir.rs1];
-
                             const is_reg: bool = (ir.opcode == Opcodes.OP_or_MULDIV);
-                            const rs2: u32 = if (is_reg) self.regs[imm & 0x1F] else imm;
 
-                            if ((is_reg) and (ir.funct7 == 1)) {
-                                switch (ir.funct3) {
-                                    MULDIV.MUL => rval = rs1 *% rs2,
-                                    MULDIV.MULH => rval = @truncate(@as(u64, @bitCast(@as(i64, @as(i32, @bitCast(rs1))) * @as(i64, @as(i32, @bitCast(rs2))))) >> 32),
-                                    MULDIV.MULHSU => rval = @truncate(@as(u64, @bitCast(@as(i64, @as(i32, @bitCast(rs1))))) *% @as(u64, rs2) >> 32),
-                                    MULDIV.MULHU => rval = @truncate((@as(u64, rs1) *% @as(u64, rs2)) >> 32),
-                                    MULDIV.DIV => if (rs2 == 0) {
-                                        rval = @bitCast(@as(i32, -1));
-                                    } else {
-                                        if ((@as(i32, @bitCast(rs1)) == std.math.minInt(i32)) and (@as(i32, @bitCast(rs2))) == -1) {
-                                            rval = rs1;
-                                        } else {
-                                            rval = @as(u32, @bitCast(@divTrunc(@as(i32, @bitCast(rs1)), @as(i32, @bitCast(rs2)))));
-                                        }
-                                    },
-                                    MULDIV.DIVU => rval = if (rs2 == 0) 0xFFFFFFFF else rs1 / rs2,
-                                    MULDIV.REM => if (rs2 == 0) {
-                                        rval = rs1;
-                                    } else {
-                                        if ((@as(i32, @bitCast(rs1)) == std.math.minInt(i32)) and (@as(i32, @bitCast(rs2))) == -1) {
-                                            rval = 0;
-                                        } else {
-                                            rval = @bitCast(@rem(@as(i32, @bitCast(rs1)), @as(i32, @bitCast(rs2))));
-                                        }
-                                    },
-                                    MULDIV.REMU => rval = if (rs2 == 0) rs1 else rs1 % rs2,
-                                }
+                            if (is_reg and ir.funct7 == 1) {
+                                rval = self.rv32M_muldiv(ir);
                             } else {
+                                var imm: u32 = ir.i_imm();
+                                imm |= @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
+
+                                const rs1: u32 = self.regs[ir.rs1];
+
+                                const rs2: u32 = if (is_reg) self.regs[imm & 0x1F] else imm;
                                 const shift_amt: u5 = @intCast(rs2 & 0x1F);
                                 const rs2_rest = rs2 >> 5;
 
@@ -409,60 +388,11 @@ pub const NanoRV32IMA = struct {
                             const csrno: u32 = ir.i_imm();
                             const microop: u32 = ir.funct3;
 
-                            if ((microop & 3) != 0) {
-                                const rs1imm: u32 = ir.rs1;
-                                const rs1: u32 = self.regs[rs1imm];
-                                var writeval: u32 = rs1;
-
-                                rval = switch (csrno) {
-                                    0x340 => self.mscratch,
-                                    0x305 => self.mtvec,
-                                    0x304 => self.mie,
-                                    0xC00 => cycle,
-                                    0x344 => self.mip,
-                                    0x341 => self.mepc,
-                                    0x300 => self.mstatus,
-                                    0x342 => self.mcause,
-                                    0x343 => self.mtval,
-                                    0xF11 => 0xFF0FF0FF, //mvendorid
-                                    0x301 => 0x40401101, //misa (XLEN=32, IMA+X)
-                                    // 0x3B0 => 0, //pmpaddr0
-                                    // 0x3a0 => 0, //pmpcfg0
-                                    // 0xF12 => 0x00000000, //marchid
-                                    // 0xF13 => 0x00000000, //mimpid
-                                    // 0xF14 => 0x00000000, //mhartid
-                                    else => @bitCast(self.handlers.other_csr_read(self, self.ram, @truncate(csrno))),
-                                };
-
-                                writeval = switch (microop) {
-                                    1 => rs1, //CSRRW
-                                    2 => rval | rs1, //CSRRS
-                                    3 => rval & ~rs1, //CSRRC
-                                    5 => rs1imm, //CSRRWI
-                                    6 => rval | rs1imm, //CSRRSI
-                                    7 => rval & ~rs1imm, //CSRRCI
-                                    else => unreachable,
-                                };
-
-                                switch (csrno) {
-                                    0x340 => self.mscratch = writeval,
-                                    0x305 => self.mtvec = writeval,
-                                    0x304 => self.mie = writeval,
-                                    0x344 => self.mip = writeval,
-                                    0x341 => self.mepc = writeval,
-                                    0x300 => self.mstatus = writeval,
-                                    0x342 => self.mcause = writeval,
-                                    0x343 => self.mtval = writeval,
-                                    // case 0x3a0: {}, //pmpcfg0
-                                    // case 0x3B0: {}, //pmpaddr0
-                                    // case 0xF11: {}, //mvendorid
-                                    // case 0xF12: {}, //marchid
-                                    // case 0xF13: {}, //mimpid
-                                    // case 0xF14: {}, //mhartid
-                                    // case 0x301: {}, //misa
-                                    else => self.handlers.other_csr_write(self, self.ram, @truncate(csrno), writeval),
-                                }
-                            } else if (microop == 0x0) { // "SYSTEM" 0b000
+                            if (microop != 0) {
+                                const r = self.rv32Zicsr(ir, cycle);
+                                rval = r.retval;
+                                trap = r.trap;
+                            } else { // "SYSTEM" 0b000
                                 rd = 0;
                                 if ((csrno & 0xFF) == 2) { // MRET
                                     const startmstatus: u32 = self.mstatus;
@@ -490,52 +420,12 @@ pub const NanoRV32IMA = struct {
                                         else => trap = .illegal_instruction,
                                     }
                                 }
-                            } else {
-                                trap = .illegal_instruction;
                             }
                         },
                         Opcodes.AMO => { // RV32A (0b00101111)
-                            var rs1: u32 = self.regs[ir.rs1];
-                            var rs2: u32 = self.regs[ir.rs2];
-
-                            rs1 -%= RAM_IMAGE_OFFSET;
-
-                            if (rs1 >= (self.ram.len - 3)) {
-                                trap = .store_access_fault;
-                                rval = rs1 +% RAM_IMAGE_OFFSET;
-                            } else {
-                                rval = load(u32, rs1, self.ram);
-                                var dowrite: u32 = 1;
-
-                                // We are ignoring the aquire & release bits.
-                                // it's fine for single core. but if I ever expand this to multi-core then I have to take care of this.
-                                switch (ir.funct7 >> 2) {
-                                    AMO.LR => {
-                                        dowrite = 0;
-                                        self.reserved_addr = rs1;
-                                    },
-                                    AMO.SC => {
-                                        rval = @intFromBool(self.reserved_addr != rs1);
-                                        dowrite = @intFromBool(rval == 0);
-                                        self.reserved_addr = 0xFFFFFFFF;
-                                    },
-                                    AMO.SWAP => {},
-                                    AMO.ADD => rs2 +%= rval,
-                                    AMO.XOR => rs2 ^= rval,
-                                    AMO.AND => rs2 &= rval,
-                                    AMO.OR => rs2 |= rval,
-                                    AMO.MIN => rs2 = if (@as(i32, @bitCast(rs2)) < @as(i32, @bitCast(rval))) rs2 else rval,
-                                    AMO.MAX => rs2 = if (@as(i32, @bitCast(rs2)) > @as(i32, @bitCast(rval))) rs2 else rval,
-                                    AMO.MINU => rs2 = if (rs2 < rval) rs2 else rval,
-                                    AMO.MAXU => rs2 = if (rs2 > rval) rs2 else rval,
-                                    else => {
-                                        trap = .illegal_instruction;
-                                        dowrite = 0;
-                                    },
-                                }
-
-                                if (dowrite != 0) store(u32, rs1, rs2, self.ram);
-                            }
+                            const r = self.rv32A_atomic(ir);
+                            rval = r.retval;
+                            trap = r.trap;
                         },
                         else => trap = .illegal_instruction,
                     }
@@ -579,5 +469,154 @@ pub const NanoRV32IMA = struct {
         self.pc = pc;
 
         return 0;
+    }
+
+    fn rv32Zicsr(self: *Self, ir: IR, cycle: u32) Result {
+        // TODO: arg cycle is a temp fix.
+
+        const rs1imm: u32 = ir.rs1;
+        const rs1: u32 = self.regs[rs1imm];
+
+        const csrno = ir.i_imm();
+
+        const rval: u32 = switch (csrno) {
+            0x340 => self.mscratch,
+            0x305 => self.mtvec,
+            0x304 => self.mie,
+            0xC00 => cycle,
+            0x344 => self.mip,
+            0x341 => self.mepc,
+            0x300 => self.mstatus,
+            0x342 => self.mcause,
+            0x343 => self.mtval,
+            0xF11 => 0xFF0FF0FF, //mvendorid
+            0x301 => 0x40401101, //misa (XLEN=32, IMA+X)
+            // 0x3B0 => 0, //pmpaddr0
+            // 0x3a0 => 0, //pmpcfg0
+            // 0xF12 => 0x00000000, //marchid
+            // 0xF13 => 0x00000000, //mimpid
+            // 0xF14 => 0x00000000, //mhartid
+            else => @bitCast(self.handlers.other_csr_read(self, self.ram, @truncate(csrno))),
+        };
+
+        const writeval = switch (ir.funct3) {
+            1 => rs1, //CSRRW
+            2 => rval | rs1, //CSRRS
+            3 => rval & ~rs1, //CSRRC
+            5 => rs1imm, //CSRRWI
+            6 => rval | rs1imm, //CSRRSI
+            7 => rval & ~rs1imm, //CSRRCI
+            else => return .{ .retval = rval, .trap = .illegal_instruction },
+        };
+
+        switch (csrno) {
+            0x340 => self.mscratch = writeval,
+            0x305 => self.mtvec = writeval,
+            0x304 => self.mie = writeval,
+            0x344 => self.mip = writeval,
+            0x341 => self.mepc = writeval,
+            0x300 => self.mstatus = writeval,
+            0x342 => self.mcause = writeval,
+            0x343 => self.mtval = writeval,
+            // case 0x3a0: {}, //pmpcfg0
+            // case 0x3B0: {}, //pmpaddr0
+            // case 0xF11: {}, //mvendorid
+            // case 0xF12: {}, //marchid
+            // case 0xF13: {}, //mimpid
+            // case 0xF14: {}, //mhartid
+            // case 0x301: {}, //misa
+            else => self.handlers.other_csr_write(self, self.ram, @truncate(csrno), writeval),
+        }
+
+        return .{ .retval = rval, .trap = null };
+    }
+
+    fn rv32M_muldiv(self: *Self, ir: IR) u32 {
+        const rs1: u32 = self.regs[ir.rs1];
+        const rs2: u32 = self.regs[ir.rs2];
+
+        var rval: u32 = 0;
+        switch (ir.funct3) {
+            MULDIV.MUL => rval = rs1 *% rs2,
+            MULDIV.MULH => rval = @truncate(@as(u64, @bitCast(@as(i64, @as(i32, @bitCast(rs1))) * @as(i64, @as(i32, @bitCast(rs2))))) >> 32),
+            MULDIV.MULHSU => rval = @truncate(@as(u64, @bitCast(@as(i64, @as(i32, @bitCast(rs1))))) *% @as(u64, rs2) >> 32),
+            MULDIV.MULHU => rval = @truncate((@as(u64, rs1) *% @as(u64, rs2)) >> 32),
+            MULDIV.DIV => if (rs2 == 0) {
+                rval = @bitCast(@as(i32, -1));
+            } else {
+                if ((@as(i32, @bitCast(rs1)) == std.math.minInt(i32)) and (@as(i32, @bitCast(rs2))) == -1) {
+                    rval = rs1;
+                } else {
+                    rval = @as(u32, @bitCast(@divTrunc(@as(i32, @bitCast(rs1)), @as(i32, @bitCast(rs2)))));
+                }
+            },
+            MULDIV.DIVU => rval = if (rs2 == 0) 0xFFFFFFFF else rs1 / rs2,
+            MULDIV.REM => if (rs2 == 0) {
+                rval = rs1;
+            } else {
+                if ((@as(i32, @bitCast(rs1)) == std.math.minInt(i32)) and (@as(i32, @bitCast(rs2))) == -1) {
+                    rval = 0;
+                } else {
+                    rval = @bitCast(@rem(@as(i32, @bitCast(rs1)), @as(i32, @bitCast(rs2))));
+                }
+            },
+            MULDIV.REMU => rval = if (rs2 == 0) rs1 else rs1 % rs2,
+        }
+
+        return rval;
+    }
+
+    fn rv32A_atomic(self: *Self, ir: IR) Result {
+        var rs1: u32 = self.regs[ir.rs1];
+        var rs2: u32 = self.regs[ir.rs2];
+
+        rs1 -%= RAM_IMAGE_OFFSET;
+
+        if (rs1 >= (self.ram.len - 3)) {
+            return .{
+                .retval = rs1 +% RAM_IMAGE_OFFSET,
+                .trap = .store_access_fault,
+            };
+        }
+
+        var val = load(u32, rs1, self.ram);
+        var dowrite = true;
+
+        // We are ignoring the aquire & release bits.
+        // it's fine for single core. but if I ever expand this
+        // to multi-core then I have to take care of this.
+        switch (ir.funct7 >> 2) {
+            AMO.LR => {
+                dowrite = false;
+                self.reserved_addr = rs1;
+            },
+            AMO.SC => {
+                val = @intFromBool(self.reserved_addr != rs1);
+                dowrite = (val == 0);
+                self.reserved_addr = 0xFFFFFFFF;
+            },
+            AMO.SWAP => {},
+            AMO.ADD => rs2 +%= val,
+            AMO.XOR => rs2 ^= val,
+            AMO.AND => rs2 &= val,
+            AMO.OR => rs2 |= val,
+            AMO.MIN => rs2 = if (@as(i32, @bitCast(rs2)) < @as(i32, @bitCast(val))) rs2 else val,
+            AMO.MAX => rs2 = if (@as(i32, @bitCast(rs2)) > @as(i32, @bitCast(val))) rs2 else val,
+            AMO.MINU => rs2 = if (rs2 < val) rs2 else val,
+            AMO.MAXU => rs2 = if (rs2 > val) rs2 else val,
+            else => {
+                return .{
+                    .retval = val,
+                    .trap = .illegal_instruction,
+                };
+            },
+        }
+
+        if (dowrite) store(u32, rs1, rs2, self.ram);
+
+        return .{
+            .retval = val,
+            .trap = null,
+        };
     }
 };
