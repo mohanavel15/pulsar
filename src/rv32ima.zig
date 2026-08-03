@@ -21,6 +21,36 @@ pub inline fn load_signed(T: type, ofs: u32, ptr: []u8) u32 {
     return @bitCast(@as(i32, @as(*align(1) T, @ptrCast(&ptr[ofs])).*));
 }
 
+const IR = packed struct(u32) {
+    opcode: u7,
+    rd: u5,
+    funct3: u3,
+    rs1: u5,
+    rs2: u5,
+    funct7: u7,
+
+    const Self = @This();
+
+    fn i_imm(self: *const Self) u32 {
+        return @as(u32, @bitCast(self.*)) >> 20;
+    }
+    fn s_imm(self: *const Self) u32 {
+        const ir: u32 = @bitCast(self.*);
+        return ((ir >> 7) & 0x1F) | ((ir & 0xFE000000) >> 20);
+    }
+    fn b_imm(self: *const Self) u32 {
+        const ir: u32 = @bitCast(self.*);
+        return ((ir & 0xF00) >> 7) | ((ir & 0x7E000000) >> 20) | ((ir & 0x80) << 4) | ((ir >> 31) << 12);
+    }
+    fn u_imm(self: *const Self) u32 {
+        return @as(u32, @bitCast(self.*)) & 0xFFFFF000;
+    }
+    fn j_imm(self: *const Self) u32 {
+        const ir: u32 = @bitCast(self.*);
+        return ((ir & 0x80000000) >> 11) | ((ir & 0x7fe00000) >> 20) | ((ir & 0x00100000) >> 9) | ((ir & 0x000ff000));
+    }
+};
+
 const Opcodes = struct {
     const OP_IMMEDIATE: u32 = 0x13;
     const OP_or_MULDIV: u32 = 0x33;
@@ -142,7 +172,7 @@ pub const NanoRV32IMA = struct {
     mtval: u32 = 0,
     mcause: u32 = 0,
 
-    mode: Mode = .user,
+    mode: Mode = .machine,
     wfi: bool = false,
     reserved_addr: u32 = 0xFFFFFFFF,
 
@@ -182,7 +212,7 @@ pub const NanoRV32IMA = struct {
         } else {
             var icount: u32 = 0;
             while (icount < count) : (icount += 1) {
-                var ir: u32 = 0;
+                var ir: IR = @bitCast(@as(u32, 0));
                 rval = 0;
                 cycle +%= 1;
                 const ofs_pc: u32 = pc -% RAM_IMAGE_OFFSET;
@@ -193,37 +223,37 @@ pub const NanoRV32IMA = struct {
                     trap = .instruction_address_misaligned;
                     break;
                 } else {
-                    ir = load(u32, ofs_pc, self.ram);
+                    ir = @bitCast(load(u32, ofs_pc, self.ram));
 
-                    const opcode = ir & 0x7F; // 0-6 bits
-                    var rd = (ir >> 7) & 0x1F; // 7-11 bits
+                    // const opcode = ir & 0x7F; // 0-6 bits
+                    var rd = ir.rd; // 7-11 bits
 
-                    switch (opcode) {
-                        0x37 => rval = ir & 0xFFFFF000, // LUI (0b0110111)
-                        0x17 => rval = pc +% (ir & 0xFFFFF000), // AUIPC (0b0010111)
+                    switch (ir.opcode) {
+                        0x37 => rval = ir.u_imm(), // LUI (0b0110111)
+                        0x17 => rval = pc +% ir.u_imm(), // AUIPC (0b0010111)
                         0x6F => { // JAL (0b1101111)
-                            var reladdy: u32 = ((ir & 0x80000000) >> 11) | ((ir & 0x7fe00000) >> 20) | ((ir & 0x00100000) >> 9) | ((ir & 0x000ff000));
+                            var reladdy: u32 = ir.j_imm();
                             if ((reladdy & 0x100000) != 0) reladdy |= 0xFFE00000;
                             rval = pc +% 4;
                             pc = pc +% reladdy -% 4;
                         },
                         0x67 => { // JALR (0b1100111)
-                            const imm: u32 = ir >> 20;
+                            const imm: u32 = ir.i_imm();
                             const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
                             rval = pc +% 4;
 
-                            pc = ((self.regs[(ir >> 15) & 0x1F] +% imm_se) & ~@as(u32, 1)) -% 4;
+                            pc = ((self.regs[ir.rs1] +% imm_se) & ~@as(u32, 1)) -% 4;
                         },
                         0x63 => { // Branch (0b1100011)
-                            var immm4: u32 = ((ir & 0xF00) >> 7) | ((ir & 0x7E000000) >> 20) | ((ir & 0x80) << 4) | ((ir >> 31) << 12);
+                            var immm4: u32 = ir.b_imm();
                             if ((immm4 & 0x1000) != 0) immm4 |= 0xFFFFE000;
 
-                            const rs1 = self.regs[(ir >> 15) & 0x1F];
-                            const rs2 = self.regs[(ir >> 20) & 0x1F];
+                            const rs1 = self.regs[ir.rs1];
+                            const rs2 = self.regs[ir.rs2];
                             immm4 = (pc +% immm4) -% 4;
                             rd = 0;
 
-                            switch ((ir >> 12) & 7) {
+                            switch (ir.funct3) {
                                 0 => {
                                     if (rs1 == rs2) pc = immm4;
                                 },
@@ -248,8 +278,8 @@ pub const NanoRV32IMA = struct {
                             }
                         },
                         0x03 => { // Load (0b0000011)
-                            const rs1: u32 = self.regs[(ir >> 15) & 0x1F];
-                            const imm: u32 = ir >> 20;
+                            const rs1: u32 = self.regs[ir.rs1];
+                            const imm: u32 = ir.i_imm();
                             const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
 
                             var rsval: u32 = rs1 +% imm_se;
@@ -264,7 +294,7 @@ pub const NanoRV32IMA = struct {
                                     rval = rsval;
                                 }
                             } else {
-                                switch ((ir >> 12) & 7) {
+                                switch (ir.funct3) {
                                     0 => rval = load_signed(i8, rsval, self.ram),
                                     1 => rval = load_signed(i16, rsval, self.ram),
                                     2 => rval = load(u32, rsval, self.ram),
@@ -275,9 +305,10 @@ pub const NanoRV32IMA = struct {
                             }
                         },
                         0x23 => { // Store 0b0100011
-                            const rs1: u32 = self.regs[(ir >> 15) & 0x1F];
-                            const rs2: u32 = self.regs[(ir >> 20) & 0x1F];
-                            var addy: u32 = ((ir >> 7) & 0x1F) | ((ir & 0xFE000000) >> 20);
+                            const rs1: u32 = self.regs[ir.rs1];
+                            const rs2: u32 = self.regs[ir.rs2];
+
+                            var addy: u32 = ir.s_imm();
                             if ((addy & 0x800) != 0) addy |= 0xFFFFF000;
 
                             addy +%= rs1 -% RAM_IMAGE_OFFSET;
@@ -297,7 +328,7 @@ pub const NanoRV32IMA = struct {
                                     rval = addy;
                                 }
                             } else {
-                                switch ((ir >> 12) & 7) {
+                                switch (ir.funct3) {
                                     0 => store(u8, addy, rs2, self.ram),
                                     1 => store(u16, addy, rs2, self.ram),
                                     2 => store(u32, addy, rs2, self.ram),
@@ -306,16 +337,16 @@ pub const NanoRV32IMA = struct {
                             }
                         },
                         Opcodes.OP_IMMEDIATE, Opcodes.OP_or_MULDIV => {
-                            var imm: u32 = ir >> 20;
+                            var imm: u32 = ir.i_imm();
                             imm |= @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
 
-                            const rs1: u32 = self.regs[(ir >> 15) & 0x1F];
+                            const rs1: u32 = self.regs[ir.rs1];
 
-                            const is_reg: bool = (ir & 0x20) != 0;
+                            const is_reg: bool = (ir.opcode == Opcodes.OP_or_MULDIV);
                             const rs2: u32 = if (is_reg) self.regs[imm & 0x1F] else imm;
 
-                            if ((is_reg) and ((ir & 0x2000000) != 0)) {
-                                switch ((ir >> 12) & 7) {
+                            if ((is_reg) and (ir.funct7 == 1)) {
+                                switch (ir.funct3) {
                                     MULDIV.MUL => rval = rs1 *% rs2,
                                     MULDIV.MULH => rval = @truncate(@as(u64, @bitCast(@as(i64, @as(i32, @bitCast(rs1))) * @as(i64, @as(i32, @bitCast(rs2))))) >> 32),
                                     MULDIV.MULHSU => rval = @truncate(@as(u64, @bitCast(@as(i64, @as(i32, @bitCast(rs1))))) *% @as(u64, rs2) >> 32),
@@ -340,14 +371,15 @@ pub const NanoRV32IMA = struct {
                                         }
                                     },
                                     MULDIV.REMU => rval = if (rs2 == 0) rs1 else rs1 % rs2,
-                                    else => unreachable,
                                 }
                             } else {
                                 const shift_amt: u5 = @intCast(rs2 & 0x1F);
                                 const rs2_rest = rs2 >> 5;
 
-                                rval = switch ((ir >> 12) & 7) {
-                                    OP.ADD_or_SUB => if ((is_reg) and ((ir & @as(u32, 0x40000000)) != 0)) rs1 -% rs2 else rs1 +% rs2,
+                                const ir_int: u32 = @bitCast(ir);
+
+                                rval = switch (ir.funct3) {
+                                    OP.ADD_or_SUB => if ((is_reg) and ((ir_int & @as(u32, 0x40000000)) != 0)) rs1 -% rs2 else rs1 +% rs2,
                                     OP.SLT => @intFromBool(@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))),
                                     OP.SLTU => @intFromBool(rs1 < rs2),
                                     OP.XOR => rs1 ^ rs2,
@@ -367,18 +399,18 @@ pub const NanoRV32IMA = struct {
                                             break :blk rval;
                                         }
 
-                                        break :blk if ((ir & 0x40000000) != 0) @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt) else rs1 >> shift_amt;
+                                        break :blk if ((ir_int & 0x40000000) != 0) @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt) else rs1 >> shift_amt;
                                     },
-                                    else => unreachable,
                                 };
                             }
                         },
                         Opcodes.FENCE_I => rd = 0, // TODO: I'll check later.
                         Opcodes.CSR => { // Zicsr  (0b1110011)
-                            const csrno: u32 = ir >> 20;
-                            const microop: u32 = (ir >> 12) & 7;
+                            const csrno: u32 = ir.i_imm();
+                            const microop: u32 = ir.funct3;
+
                             if ((microop & 3) != 0) {
-                                const rs1imm: u32 = (ir >> 15) & 0x1F;
+                                const rs1imm: u32 = ir.rs1;
                                 const rs1: u32 = self.regs[rs1imm];
                                 var writeval: u32 = rs1;
 
@@ -449,7 +481,7 @@ pub const NanoRV32IMA = struct {
                                             }
 
                                             self.cyclel = cycle;
-                                            self.handlers.post_exec(self, pc, ir, trap);
+                                            self.handlers.post_exec(self, pc, @bitCast(ir), trap);
 
                                             self.pc = pc +% 4;
 
@@ -463,9 +495,8 @@ pub const NanoRV32IMA = struct {
                             }
                         },
                         Opcodes.AMO => { // RV32A (0b00101111)
-                            var rs1: u32 = self.regs[(ir >> 15) & 0x1F];
-                            var rs2: u32 = self.regs[(ir >> 20) & 0x1F];
-                            const irmid: u32 = (ir >> 27) & 0x1F;
+                            var rs1: u32 = self.regs[ir.rs1];
+                            var rs2: u32 = self.regs[ir.rs2];
 
                             rs1 -%= RAM_IMAGE_OFFSET;
 
@@ -475,7 +506,10 @@ pub const NanoRV32IMA = struct {
                             } else {
                                 rval = load(u32, rs1, self.ram);
                                 var dowrite: u32 = 1;
-                                switch (irmid) {
+
+                                // We are ignoring the aquire & release bits.
+                                // it's fine for single core. but if I ever expand this to multi-core then I have to take care of this.
+                                switch (ir.funct7 >> 2) {
                                     AMO.LR => {
                                         dowrite = 0;
                                         self.reserved_addr = rs1;
@@ -508,14 +542,14 @@ pub const NanoRV32IMA = struct {
 
                     if (trap != null) {
                         self.pc = pc;
-                        self.handlers.post_exec(self, pc, ir, trap);
+                        self.handlers.post_exec(self, pc, @bitCast(ir), trap);
                         break;
                     }
                     if (rd != 0) {
                         self.regs[rd] = rval;
                     }
                 }
-                self.handlers.post_exec(self, pc, ir, trap);
+                self.handlers.post_exec(self, pc, @bitCast(ir), trap);
                 pc +%= 4;
             }
         }
