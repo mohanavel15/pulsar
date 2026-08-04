@@ -1,6 +1,3 @@
-// translated using zig translate-c and manually tweaked.
-// Too many casting... and other things. I hope eventually I'll clean up the code.
-
 const std = @import("std");
 
 pub const RAM_IMAGE_OFFSET: u32 = 0x80000000;
@@ -116,8 +113,8 @@ pub const Traps = enum(u32) {
 };
 
 const Result = struct {
-    retval: u32,
-    trap: ?Traps,
+    val: u32 = 0,
+    trap: ?Traps = null,
 };
 
 pub const Handlers = struct {
@@ -205,268 +202,275 @@ pub const NanoRV32IMA = struct {
         }
 
         if (self.wfi) return 1;
+
         var trap: ?Traps = null;
         var rval: u32 = 0;
-        var pc: u32 = self.pc;
         var cycle: u32 = self.cyclel;
+
+        defer {
+            if (trap) |trap_val| {
+                const trap_code: u32 = @intFromEnum(trap_val);
+
+                self.mcause = trap_code;
+                self.mtval = if ((trap_code > 5) and (trap_code <= 8)) rval else self.pc;
+
+                if ((trap_code & 0x80000000) != 0) { // If prefixed with 1 in MSB, it's an interrupt, not a trap.
+                    self.mtval = 0;
+                    self.pc +%= 4;
+                }
+
+                self.mepc = self.pc;
+                self.mstatus = ((self.mstatus & 8) << 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0);
+                self.pc = self.mtvec -% 4;
+                self.mode = .machine;
+                trap = null;
+                self.pc +%= 4;
+            }
+
+            if (self.cyclel > cycle) self.cycleh +%= 1;
+
+            self.cyclel = cycle;
+        }
 
         if ((self.mip & (1 << 7)) != 0 and (self.mie & (1 << 7)) != 0 and (self.mstatus & 0x8) != 0) {
             trap = .machine_timer_interrupt;
-            pc -%= 4;
-        } else {
-            var icount: u32 = 0;
-            while (icount < count) : (icount += 1) {
-                var ir: IR = @bitCast(@as(u32, 0));
-                rval = 0;
-                cycle +%= 1;
-                const ofs_pc: u32 = pc -% RAM_IMAGE_OFFSET;
-                if (ofs_pc >= self.ram.len) {
-                    trap = .instruction_access_fault;
-                    break;
-                } else if ((ofs_pc & 3) != 0) {
-                    trap = .instruction_address_misaligned;
-                    break;
-                } else {
-                    ir = @bitCast(load(u32, ofs_pc, self.ram));
+            self.pc -%= 4;
 
-                    // const opcode = ir & 0x7F; // 0-6 bits
-                    var rd = ir.rd; // 7-11 bits
+            return 0;
+        }
 
-                    switch (ir.opcode) {
-                        0x37 => rval = ir.u_imm(), // LUI (0b0110111)
-                        0x17 => rval = pc +% ir.u_imm(), // AUIPC (0b0010111)
-                        0x6F => { // JAL (0b1101111)
-                            var reladdy: u32 = ir.j_imm();
-                            if ((reladdy & 0x100000) != 0) reladdy |= 0xFFE00000;
-                            rval = pc +% 4;
-                            pc = pc +% reladdy -% 4;
+        var icount: u32 = 0;
+        while (icount < count) : (icount += 1) {
+            rval = 0;
+            cycle +%= 1;
+
+            const ofs_pc: u32 = self.pc -% RAM_IMAGE_OFFSET;
+            if (ofs_pc >= self.ram.len) {
+                trap = .instruction_access_fault;
+                break;
+            }
+
+            if ((ofs_pc & 3) != 0) {
+                trap = .instruction_address_misaligned;
+                break;
+            }
+
+            var ir: IR = @bitCast(load(u32, ofs_pc, self.ram));
+            var rd = ir.rd;
+
+            switch (ir.opcode) {
+                0x37 => rval = ir.u_imm(), // LUI (0b0110111)
+                0x17 => rval = self.pc +% ir.u_imm(), // AUIPC (0b0010111)
+                0x6F => { // JAL (0b1101111)
+                    var reladdy: u32 = ir.j_imm();
+                    if ((reladdy & 0x100000) != 0) reladdy |= 0xFFE00000;
+                    rval = self.pc +% 4;
+                    self.pc = self.pc +% reladdy -% 4;
+                },
+                0x67 => { // JALR (0b1100111)
+                    const imm: u32 = ir.i_imm();
+                    const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
+                    rval = self.pc +% 4;
+
+                    self.pc = ((self.regs[ir.rs1] +% imm_se) & ~@as(u32, 1)) -% 4;
+                },
+                0x63 => { // Branch (0b1100011)
+                    rd = 0; // imm here.
+
+                    var immm4: u32 = ir.b_imm();
+                    if ((immm4 & 0x1000) != 0) immm4 |= 0xFFFFE000;
+
+                    const rs1 = self.regs[ir.rs1];
+                    const rs2 = self.regs[ir.rs2];
+                    immm4 = (self.pc +% immm4) -% 4;
+
+                    switch (ir.funct3) {
+                        0 => {
+                            if (rs1 == rs2) self.pc = immm4;
                         },
-                        0x67 => { // JALR (0b1100111)
-                            const imm: u32 = ir.i_imm();
-                            const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
-                            rval = pc +% 4;
-
-                            pc = ((self.regs[ir.rs1] +% imm_se) & ~@as(u32, 1)) -% 4;
+                        1 => {
+                            if (rs1 != rs2) self.pc = immm4;
                         },
-                        0x63 => { // Branch (0b1100011)
-                            var immm4: u32 = ir.b_imm();
-                            if ((immm4 & 0x1000) != 0) immm4 |= 0xFFFFE000;
+                        4 => {
+                            if (@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))) self.pc = immm4;
+                        },
+                        5 => {
+                            if (@as(i32, @bitCast(rs1)) >= @as(i32, @bitCast(rs2))) self.pc = immm4;
+                        },
+                        6 => {
+                            if (rs1 < rs2) self.pc = immm4;
+                        },
+                        7 => {
+                            if (rs1 >= rs2) self.pc = immm4;
+                        },
+                        else => {
+                            trap = .illegal_instruction;
+                        },
+                    }
+                },
+                0x03 => { // Load (0b0000011)
+                    const rs1: u32 = self.regs[ir.rs1];
+                    const imm: u32 = ir.i_imm();
+                    const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
 
-                            const rs1 = self.regs[ir.rs1];
-                            const rs2 = self.regs[ir.rs2];
-                            immm4 = (pc +% immm4) -% 4;
-                            rd = 0;
+                    var rsval: u32 = rs1 +% imm_se;
 
-                            switch (ir.funct3) {
-                                0 => {
-                                    if (rs1 == rs2) pc = immm4;
-                                },
-                                1 => {
-                                    if (rs1 != rs2) pc = immm4;
-                                },
-                                4 => {
-                                    if (@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))) pc = immm4;
-                                },
-                                5 => {
-                                    if (@as(i32, @bitCast(rs1)) >= @as(i32, @bitCast(rs2))) pc = immm4;
-                                },
-                                6 => {
-                                    if (rs1 < rs2) pc = immm4;
-                                },
-                                7 => {
-                                    if (rs1 >= rs2) pc = immm4;
-                                },
-                                else => {
+                    rsval -%= RAM_IMAGE_OFFSET;
+                    if (rsval >= (self.ram.len - 3)) {
+                        rsval +%= RAM_IMAGE_OFFSET;
+                        if (mmio_range(rsval)) {
+                            rval = self.handlers.control_load(self, rsval);
+                        } else {
+                            trap = .load_access_fault;
+                            rval = rsval;
+                        }
+                    } else {
+                        switch (ir.funct3) {
+                            0 => rval = load_signed(i8, rsval, self.ram),
+                            1 => rval = load_signed(i16, rsval, self.ram),
+                            2 => rval = load(u32, rsval, self.ram),
+                            4 => rval = load(u8, rsval, self.ram),
+                            5 => rval = load(u16, rsval, self.ram),
+                            else => trap = .illegal_instruction,
+                        }
+                    }
+                },
+                0x23 => { // Store 0b0100011
+                    const rs1: u32 = self.regs[ir.rs1];
+                    const rs2: u32 = self.regs[ir.rs2];
+
+                    var addy: u32 = ir.s_imm();
+                    if ((addy & 0x800) != 0) addy |= 0xFFFFF000;
+
+                    addy +%= rs1 -% RAM_IMAGE_OFFSET;
+                    rd = 0;
+
+                    // std.debug.print("TODO: Remove this after all the risc-v ima tests passes. \n", .{});
+                    if (addy +% RAM_IMAGE_OFFSET == 0x80001000) {
+                        _ = self.handlers.control_store(self, 0x80001000, rs2);
+                    }
+
+                    if (addy >= (self.ram.len - 3)) {
+                        addy +%= RAM_IMAGE_OFFSET;
+                        if (mmio_range(addy)) {
+                            if (self.handlers.control_store(self, addy, rs2) != 0) return @bitCast(rs2);
+                        } else {
+                            trap = .store_access_fault;
+                            rval = addy;
+                        }
+                    } else {
+                        switch (ir.funct3) {
+                            0 => store(u8, addy, rs2, self.ram),
+                            1 => store(u16, addy, rs2, self.ram),
+                            2 => store(u32, addy, rs2, self.ram),
+                            else => trap = .illegal_instruction,
+                        }
+                    }
+                },
+                Opcodes.OP_IMMEDIATE, Opcodes.OP_or_MULDIV => {
+                    const is_reg: bool = (ir.opcode == Opcodes.OP_or_MULDIV);
+
+                    if (is_reg and ir.funct7 == 1) {
+                        const r = self.rv32M_muldiv(ir);
+                        rval = r.val;
+                        trap = r.trap;
+                    } else {
+                        var imm: u32 = ir.i_imm();
+                        imm |= @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
+
+                        const rs1: u32 = self.regs[ir.rs1];
+
+                        const rs2: u32 = if (is_reg) self.regs[imm & 0x1F] else imm;
+                        const shift_amt: u5 = @intCast(rs2 & 0x1F);
+                        const rs2_rest = rs2 >> 5;
+
+                        const ir_int: u32 = @bitCast(ir);
+
+                        rval = switch (ir.funct3) {
+                            OP.ADD_or_SUB => if ((is_reg) and ((ir_int & @as(u32, 0x40000000)) != 0)) rs1 -% rs2 else rs1 +% rs2,
+                            OP.SLT => @intFromBool(@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))),
+                            OP.SLTU => @intFromBool(rs1 < rs2),
+                            OP.XOR => rs1 ^ rs2,
+                            OP.OR => rs1 | rs2,
+                            OP.AND => rs1 & rs2,
+                            OP.SLL => blk: {
+                                if (!is_reg and rs2_rest != 0) {
                                     trap = .illegal_instruction;
-                                },
-                            }
-                        },
-                        0x03 => { // Load (0b0000011)
-                            const rs1: u32 = self.regs[ir.rs1];
-                            const imm: u32 = ir.i_imm();
-                            const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
-
-                            var rsval: u32 = rs1 +% imm_se;
-
-                            rsval -%= RAM_IMAGE_OFFSET;
-                            if (rsval >= (self.ram.len - 3)) {
-                                rsval +%= RAM_IMAGE_OFFSET;
-                                if (mmio_range(rsval)) {
-                                    rval = self.handlers.control_load(self, rsval);
-                                } else {
-                                    trap = .load_access_fault;
-                                    rval = rsval;
+                                    break :blk rval;
                                 }
-                            } else {
-                                switch (ir.funct3) {
-                                    0 => rval = load_signed(i8, rsval, self.ram),
-                                    1 => rval = load_signed(i16, rsval, self.ram),
-                                    2 => rval = load(u32, rsval, self.ram),
-                                    4 => rval = load(u8, rsval, self.ram),
-                                    5 => rval = load(u16, rsval, self.ram),
-                                    else => trap = .illegal_instruction,
+
+                                break :blk rs1 << shift_amt;
+                            },
+                            OP.SRL_or_SRA => blk: {
+                                if (!is_reg and rs2_rest != 0 and rs2_rest != 0x20) {
+                                    trap = .illegal_instruction;
+                                    break :blk rval;
                                 }
-                            }
-                        },
-                        0x23 => { // Store 0b0100011
-                            const rs1: u32 = self.regs[ir.rs1];
-                            const rs2: u32 = self.regs[ir.rs2];
 
-                            var addy: u32 = ir.s_imm();
-                            if ((addy & 0x800) != 0) addy |= 0xFFFFF000;
+                                break :blk if ((ir_int & 0x40000000) != 0) @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt) else rs1 >> shift_amt;
+                            },
+                        };
+                    }
+                },
+                Opcodes.FENCE_I => rd = 0, // TODO: I'll check later.
+                Opcodes.CSR => { // Zicsr  (0b1110011)
+                    const csrno: u32 = ir.i_imm();
+                    const microop: u32 = ir.funct3;
 
-                            addy +%= rs1 -% RAM_IMAGE_OFFSET;
-                            rd = 0;
-
-                            // std.debug.print("TODO: Remove this after all the risc-v ima tests passes. \n", .{});
-                            if (addy +% RAM_IMAGE_OFFSET == 0x80001000) {
-                                _ = self.handlers.control_store(self, 0x80001000, rs2);
-                            }
-
-                            if (addy >= (self.ram.len - 3)) {
-                                addy +%= RAM_IMAGE_OFFSET;
-                                if (mmio_range(addy)) {
-                                    if (self.handlers.control_store(self, addy, rs2) != 0) return @bitCast(rs2);
-                                } else {
-                                    trap = .store_access_fault;
-                                    rval = addy;
-                                }
-                            } else {
-                                switch (ir.funct3) {
-                                    0 => store(u8, addy, rs2, self.ram),
-                                    1 => store(u16, addy, rs2, self.ram),
-                                    2 => store(u32, addy, rs2, self.ram),
-                                    else => trap = .illegal_instruction,
-                                }
-                            }
-                        },
-                        Opcodes.OP_IMMEDIATE, Opcodes.OP_or_MULDIV => {
-                            const is_reg: bool = (ir.opcode == Opcodes.OP_or_MULDIV);
-
-                            if (is_reg and ir.funct7 == 1) {
-                                rval = self.rv32M_muldiv(ir);
-                            } else {
-                                var imm: u32 = ir.i_imm();
-                                imm |= @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
-
-                                const rs1: u32 = self.regs[ir.rs1];
-
-                                const rs2: u32 = if (is_reg) self.regs[imm & 0x1F] else imm;
-                                const shift_amt: u5 = @intCast(rs2 & 0x1F);
-                                const rs2_rest = rs2 >> 5;
-
-                                const ir_int: u32 = @bitCast(ir);
-
-                                rval = switch (ir.funct3) {
-                                    OP.ADD_or_SUB => if ((is_reg) and ((ir_int & @as(u32, 0x40000000)) != 0)) rs1 -% rs2 else rs1 +% rs2,
-                                    OP.SLT => @intFromBool(@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))),
-                                    OP.SLTU => @intFromBool(rs1 < rs2),
-                                    OP.XOR => rs1 ^ rs2,
-                                    OP.OR => rs1 | rs2,
-                                    OP.AND => rs1 & rs2,
-                                    OP.SLL => blk: {
-                                        if (!is_reg and rs2_rest != 0) {
-                                            trap = .illegal_instruction;
-                                            break :blk rval;
-                                        }
-
-                                        break :blk rs1 << shift_amt;
-                                    },
-                                    OP.SRL_or_SRA => blk: {
-                                        if (!is_reg and rs2_rest != 0 and rs2_rest != 0x20) {
-                                            trap = .illegal_instruction;
-                                            break :blk rval;
-                                        }
-
-                                        break :blk if ((ir_int & 0x40000000) != 0) @bitCast(@as(i32, @bitCast(rs1)) >> shift_amt) else rs1 >> shift_amt;
-                                    },
-                                };
-                            }
-                        },
-                        Opcodes.FENCE_I => rd = 0, // TODO: I'll check later.
-                        Opcodes.CSR => { // Zicsr  (0b1110011)
-                            const csrno: u32 = ir.i_imm();
-                            const microop: u32 = ir.funct3;
-
-                            if (microop != 0) {
-                                const r = self.rv32Zicsr(ir, cycle);
-                                rval = r.retval;
-                                trap = r.trap;
-                            } else { // "SYSTEM" 0b000
-                                rd = 0;
-                                if ((csrno & 0xFF) == 2) { // MRET
-                                    const startmstatus: u32 = self.mstatus;
-                                    self.mstatus = ((startmstatus & 0x80) >> 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0) | 0x80;
-                                    self.mode = if (((startmstatus >> 11) & 3) != 0) .machine else .user;
-                                    pc = self.mepc -% 4;
-                                } else {
-                                    switch (csrno) {
-                                        0 => trap = if (self.mode == .machine) .environment_call_from_M_mode else .environment_call_from_U_mode,
-                                        1 => trap = .breakpoint,
-                                        261 => {
-                                            self.mstatus |= 8;
-                                            self.wfi = true;
-                                            if (self.cyclel > cycle) {
-                                                self.cycleh +%= 1;
-                                            }
-
-                                            self.cyclel = cycle;
-                                            self.handlers.post_exec(self, pc, @bitCast(ir), trap);
-
-                                            self.pc = pc +% 4;
-
-                                            return 1;
-                                        },
-                                        else => trap = .illegal_instruction,
+                    if (microop != 0) {
+                        const r = self.rv32Zicsr(ir, cycle);
+                        rval = r.val;
+                        trap = r.trap;
+                    } else { // "SYSTEM" 0b000
+                        rd = 0;
+                        if ((csrno & 0xFF) == 2) { // MRET
+                            const startmstatus: u32 = self.mstatus;
+                            self.mstatus = ((startmstatus & 0x80) >> 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0) | 0x80;
+                            self.mode = if (((startmstatus >> 11) & 3) != 0) .machine else .user;
+                            self.pc = self.mepc -% 4;
+                        } else {
+                            switch (csrno) {
+                                0 => trap = if (self.mode == .machine) .environment_call_from_M_mode else .environment_call_from_U_mode,
+                                1 => trap = .breakpoint,
+                                261 => {
+                                    self.mstatus |= 8;
+                                    self.wfi = true;
+                                    if (self.cyclel > cycle) {
+                                        self.cycleh +%= 1;
                                     }
-                                }
+
+                                    self.cyclel = cycle;
+                                    self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+
+                                    self.pc = self.pc +% 4;
+
+                                    return 1;
+                                },
+                                else => trap = .illegal_instruction,
                             }
-                        },
-                        Opcodes.AMO => { // RV32A (0b00101111)
-                            const r = self.rv32A_atomic(ir);
-                            rval = r.retval;
-                            trap = r.trap;
-                        },
-                        else => trap = .illegal_instruction,
+                        }
                     }
-
-                    if (trap != null) {
-                        self.pc = pc;
-                        self.handlers.post_exec(self, pc, @bitCast(ir), trap);
-                        break;
-                    }
-                    if (rd != 0) {
-                        self.regs[rd] = rval;
-                    }
-                }
-                self.handlers.post_exec(self, pc, @bitCast(ir), trap);
-                pc +%= 4;
-            }
-        }
-
-        if (trap) |trap_val| {
-            const trap_code: u32 = @intFromEnum(trap_val);
-
-            self.mcause = trap_code;
-            self.mtval = if ((trap_code > 5) and (trap_code <= 8)) rval else pc;
-
-            if ((trap_code & 0x80000000) != 0) { // If prefixed with 1 in MSB, it's an interrupt, not a trap.
-                self.mtval = 0;
-                pc +%= 4;
+                },
+                Opcodes.AMO => { // RV32A (0b00101111)
+                    const r = self.rv32A_atomic(ir);
+                    rval = r.val;
+                    trap = r.trap;
+                },
+                else => trap = .illegal_instruction,
             }
 
-            self.mepc = pc;
-            self.mstatus = ((self.mstatus & 8) << 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0);
-            pc = self.mtvec -% 4;
-            self.mode = .machine;
-            trap = null;
-            pc +%= 4;
+            if (trap != null) {
+                self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+                break;
+            }
+
+            if (rd != 0) {
+                self.regs[rd] = rval;
+            }
+
+            self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+            self.pc +%= 4;
         }
-
-        if (self.cyclel > cycle) self.cycleh +%= 1;
-
-        self.cyclel = cycle;
-        self.pc = pc;
 
         return 0;
     }
@@ -506,7 +510,7 @@ pub const NanoRV32IMA = struct {
             5 => rs1imm, //CSRRWI
             6 => rval | rs1imm, //CSRRSI
             7 => rval & ~rs1imm, //CSRRCI
-            else => return .{ .retval = rval, .trap = .illegal_instruction },
+            else => return .{ .val = @bitCast(ir), .trap = .illegal_instruction },
         };
 
         switch (csrno) {
@@ -528,10 +532,10 @@ pub const NanoRV32IMA = struct {
             else => self.handlers.other_csr_write(self, self.ram, @truncate(csrno), writeval),
         }
 
-        return .{ .retval = rval, .trap = null };
+        return .{ .val = rval };
     }
 
-    fn rv32M_muldiv(self: *Self, ir: IR) u32 {
+    fn rv32M_muldiv(self: *Self, ir: IR) Result {
         const rs1: u32 = self.regs[ir.rs1];
         const rs2: u32 = self.regs[ir.rs2];
 
@@ -563,7 +567,7 @@ pub const NanoRV32IMA = struct {
             MULDIV.REMU => rval = if (rs2 == 0) rs1 else rs1 % rs2,
         }
 
-        return rval;
+        return .{ .val = rval };
     }
 
     fn rv32A_atomic(self: *Self, ir: IR) Result {
@@ -574,7 +578,7 @@ pub const NanoRV32IMA = struct {
 
         if (rs1 >= (self.ram.len - 3)) {
             return .{
-                .retval = rs1 +% RAM_IMAGE_OFFSET,
+                .val = rs1 +% RAM_IMAGE_OFFSET,
                 .trap = .store_access_fault,
             };
         }
@@ -606,7 +610,7 @@ pub const NanoRV32IMA = struct {
             AMO.MAXU => rs2 = if (rs2 > val) rs2 else val,
             else => {
                 return .{
-                    .retval = val,
+                    .val = @bitCast(ir),
                     .trap = .illegal_instruction,
                 };
             },
@@ -614,9 +618,6 @@ pub const NanoRV32IMA = struct {
 
         if (dowrite) store(u32, rs1, rs2, self.ram);
 
-        return .{
-            .retval = val,
-            .trap = null,
-        };
+        return .{ .val = val };
     }
 };
