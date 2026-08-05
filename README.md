@@ -9,15 +9,13 @@ The emulator currently passes 72/76 IMA test in [riscv-tests](https://github.com
 $ python tests.py
 Found 76 tests in the test directory.
 
-[FAIL] rv32mi-p-ma_fetch - STDERR: FAILED: 5
 [FAIL] rv32mi-p-pmpaddr - STDERR: FAILED: 3
-[HANG] rv32ui-p-ld_st
-73/76 PASSED - 4/76 FAILED
+75/76 PASSED - 4/76 FAILED
 ```
 
 * The tests are filered by `rv32(m|u)(i|m|a)-p-*` to only included IMA tests.
 
-**Improvements:** Fixed 3 failing test case.
+**Improvements:** Fixed 4 failing test case.
 
 ## Why?
 

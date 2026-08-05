@@ -217,7 +217,7 @@ pub const NanoRV32IMA = struct {
 
                 self.mcause = trap_code;
                 self.mtval = if ((trap_code > 5) and (trap_code <= 8)) rval else self.pc;
-                if (trap_val == .illegal_instruction) { // temp fix. need to make it all the vals are set to rval.
+                if (trap_val == .illegal_instruction or trap_val == .instruction_address_misaligned) { // temp fix. need to make it all the vals are set to rval.
                     self.mtval = rval;
                 }
 
@@ -259,10 +259,13 @@ pub const NanoRV32IMA = struct {
 
             if ((ofs_pc & 3) != 0) {
                 trap = .instruction_address_misaligned;
+                rval = self.pc;
                 break;
             }
 
             const ir: IR = @bitCast(load(u32, ofs_pc, self.ram));
+            var new_pc = self.pc;
+
             var rd = ir.rd;
 
             switch (ir.opcode) {
@@ -271,15 +274,16 @@ pub const NanoRV32IMA = struct {
                 0x6F => { // JAL (0b1101111)
                     var reladdy: u32 = ir.j_imm();
                     if ((reladdy & 0x100000) != 0) reladdy |= 0xFFE00000;
+
+                    new_pc = self.pc +% reladdy -% 4;
                     rval = self.pc +% 4;
-                    self.pc = self.pc +% reladdy -% 4;
                 },
                 0x67 => { // JALR (0b1100111)
                     const imm: u32 = ir.i_imm();
                     const imm_se: u32 = imm | @as(u32, if ((imm & 0x800) != 0) 0xFFFFF000 else 0);
-                    rval = self.pc +% 4;
 
-                    self.pc = ((self.regs[ir.rs1] +% imm_se) & ~@as(u32, 1)) -% 4;
+                    new_pc = ((self.regs[ir.rs1] +% imm_se) & ~@as(u32, 1)) -% 4;
+                    rval = self.pc +% 4;
                 },
                 0x63 => { // Branch (0b1100011)
                     rd = 0; // imm here.
@@ -293,22 +297,22 @@ pub const NanoRV32IMA = struct {
 
                     switch (ir.funct3) {
                         0 => {
-                            if (rs1 == rs2) self.pc = immm4;
+                            if (rs1 == rs2) new_pc = immm4;
                         },
                         1 => {
-                            if (rs1 != rs2) self.pc = immm4;
+                            if (rs1 != rs2) new_pc = immm4;
                         },
                         4 => {
-                            if (@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))) self.pc = immm4;
+                            if (@as(i32, @bitCast(rs1)) < @as(i32, @bitCast(rs2))) new_pc = immm4;
                         },
                         5 => {
-                            if (@as(i32, @bitCast(rs1)) >= @as(i32, @bitCast(rs2))) self.pc = immm4;
+                            if (@as(i32, @bitCast(rs1)) >= @as(i32, @bitCast(rs2))) new_pc = immm4;
                         },
                         6 => {
-                            if (rs1 < rs2) self.pc = immm4;
+                            if (rs1 < rs2) new_pc = immm4;
                         },
                         7 => {
-                            if (rs1 >= rs2) self.pc = immm4;
+                            if (rs1 >= rs2) new_pc = immm4;
                         },
                         else => {
                             trap = .illegal_instruction;
@@ -443,7 +447,7 @@ pub const NanoRV32IMA = struct {
                             const startmstatus: u32 = self.mstatus;
                             self.mstatus = ((startmstatus & 0x80) >> 4) | @as(u32, if (self.mode == .machine) 0x1800 else 0) | 0x80;
                             self.mode = if (((startmstatus >> 11) & 3) != 0) .machine else .user;
-                            self.pc = self.mepc -% 4;
+                            new_pc = self.mepc -% 4;
                         } else {
                             switch (csrno) {
                                 0 => trap = if (self.mode == .machine) .environment_call_from_M_mode else .environment_call_from_U_mode,
@@ -458,7 +462,7 @@ pub const NanoRV32IMA = struct {
                                     self.cyclel = cycle;
                                     self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
 
-                                    self.pc = self.pc +% 4;
+                                    new_pc = self.pc +% 4;
 
                                     return 1;
                                 },
@@ -481,6 +485,11 @@ pub const NanoRV32IMA = struct {
                 },
             }
 
+            if ((new_pc & 3) != 0) {
+                trap = .instruction_address_misaligned;
+                rval = new_pc +% 4;
+            }
+
             if (trap != null) {
                 self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
                 break;
@@ -491,7 +500,7 @@ pub const NanoRV32IMA = struct {
             }
 
             self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
-            self.pc +%= 4;
+            self.pc = new_pc +% 4;
         }
 
         return 0;
