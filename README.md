@@ -10,7 +10,7 @@ $ python tests.py
 Found 76 tests in the test directory.
 
 [FAIL] rv32mi-p-pmpaddr - STDERR: FAILED: 3
-75/76 PASSED - 4/76 FAILED
+75/76 PASSED - 1/76 FAILED
 ```
 
 * The tests are filered by `rv32(m|u)(i|m|a)-p-*` to only included IMA tests.
