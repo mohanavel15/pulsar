@@ -2,6 +2,10 @@ const std = @import("std");
 
 pub const RAM_IMAGE_OFFSET: u32 = 0x80000000;
 
+const MSTATUS_WRITE_MASK: u32 = 0xFFA3FEDD;
+const MSTATUS_MPP_MASK: u32 = 0x1800;
+const MIP_MIE_WRITE_MASK: u32 = 0x2888;
+
 pub inline fn mmio_range(n: u32) bool {
     return 0x10000000 <= n and n < 0x12000000;
 }
@@ -213,6 +217,9 @@ pub const NanoRV32IMA = struct {
 
                 self.mcause = trap_code;
                 self.mtval = if ((trap_code > 5) and (trap_code <= 8)) rval else self.pc;
+                if (trap_val == .illegal_instruction) { // temp fix. need to make it all the vals are set to rval.
+                    self.mtval = rval;
+                }
 
                 if ((trap_code & 0x80000000) != 0) { // If prefixed with 1 in MSB, it's an interrupt, not a trap.
                     self.mtval = 0;
@@ -255,7 +262,7 @@ pub const NanoRV32IMA = struct {
                 break;
             }
 
-            var ir: IR = @bitCast(load(u32, ofs_pc, self.ram));
+            const ir: IR = @bitCast(load(u32, ofs_pc, self.ram));
             var rd = ir.rd;
 
             switch (ir.opcode) {
@@ -305,6 +312,7 @@ pub const NanoRV32IMA = struct {
                         },
                         else => {
                             trap = .illegal_instruction;
+                            rval = @bitCast(ir);
                         },
                     }
                 },
@@ -331,7 +339,10 @@ pub const NanoRV32IMA = struct {
                             2 => rval = load(u32, rsval, self.ram),
                             4 => rval = load(u8, rsval, self.ram),
                             5 => rval = load(u16, rsval, self.ram),
-                            else => trap = .illegal_instruction,
+                            else => {
+                                trap = .illegal_instruction;
+                                rval = @bitCast(ir);
+                            },
                         }
                     }
                 },
@@ -363,7 +374,10 @@ pub const NanoRV32IMA = struct {
                             0 => store(u8, addy, rs2, self.ram),
                             1 => store(u16, addy, rs2, self.ram),
                             2 => store(u32, addy, rs2, self.ram),
-                            else => trap = .illegal_instruction,
+                            else => {
+                                trap = .illegal_instruction;
+                                rval = @bitCast(ir);
+                            },
                         }
                     }
                 },
@@ -396,6 +410,7 @@ pub const NanoRV32IMA = struct {
                             OP.SLL => blk: {
                                 if (!is_reg and rs2_rest != 0) {
                                     trap = .illegal_instruction;
+                                    rval = @bitCast(ir);
                                     break :blk rval;
                                 }
 
@@ -404,6 +419,7 @@ pub const NanoRV32IMA = struct {
                             OP.SRL_or_SRA => blk: {
                                 if (!is_reg and rs2_rest != 0 and rs2_rest != 0x20) {
                                     trap = .illegal_instruction;
+                                    rval = @bitCast(ir);
                                     break :blk rval;
                                 }
 
@@ -446,7 +462,10 @@ pub const NanoRV32IMA = struct {
 
                                     return 1;
                                 },
-                                else => trap = .illegal_instruction,
+                                else => {
+                                    trap = .illegal_instruction;
+                                    rval = @bitCast(ir);
+                                },
                             }
                         }
                     }
@@ -456,7 +475,10 @@ pub const NanoRV32IMA = struct {
                     rval = r.val;
                     trap = r.trap;
                 },
-                else => trap = .illegal_instruction,
+                else => {
+                    trap = .illegal_instruction;
+                    rval = @bitCast(ir);
+                },
             }
 
             if (trap != null) {
@@ -516,10 +538,16 @@ pub const NanoRV32IMA = struct {
         switch (csrno) {
             0x340 => self.mscratch = writeval,
             0x305 => self.mtvec = writeval,
-            0x304 => self.mie = writeval,
-            0x344 => self.mip = writeval,
+            0x304 => self.mie = (writeval & MIP_MIE_WRITE_MASK),
+            0x344 => self.mip = (writeval & MIP_MIE_WRITE_MASK),
             0x341 => self.mepc = writeval,
-            0x300 => self.mstatus = writeval,
+            0x300 => {
+                const val = writeval & MSTATUS_WRITE_MASK;
+                self.mstatus = switch (val & MSTATUS_MPP_MASK) {
+                    0, 3 => val,
+                    else => (val & ~MSTATUS_MPP_MASK) | (rval & MSTATUS_MPP_MASK),
+                };
+            },
             0x342 => self.mcause = writeval,
             0x343 => self.mtval = writeval,
             // case 0x3a0: {}, //pmpcfg0
