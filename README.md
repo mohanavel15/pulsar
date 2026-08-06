@@ -6,11 +6,18 @@ This project is Zig translation of [cnlohr/mini-rv32ima](https://github.com/cnlo
 ## Current State
 The emulator currently passes 72/76 IMA test in [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
 ```
-$ python tests.py
-Found 76 tests in the test directory.
+$ zig test src/riscv_tests.zig
+==========rv32i==========
+[FAIL] rv32mi-p-pmpaddr.bin - Error: 3
+57/58 PASSED - 1/58 FAILED
 
-[FAIL] rv32mi-p-pmpaddr - STDERR: FAILED: 3
-75/76 PASSED - 1/76 FAILED
+==========rv32m==========
+8/8 PASSED - 0/8 FAILED
+
+==========rv32a==========
+10/10 PASSED - 0/10 FAILED
+
+All 1 tests passed.
 ```
 
 * The tests are filered by `rv32(m|u)(i|m|a)-p-*` to only included IMA tests.

@@ -357,13 +357,14 @@ pub const NanoRV32IMA = struct {
                     var addy: u32 = ir.s_imm();
                     if ((addy & 0x800) != 0) addy |= 0xFFFFF000;
 
-                    addy +%= rs1 -% RAM_IMAGE_OFFSET;
+                    addy +%= rs1;
                     rd = 0;
 
-                    // std.debug.print("TODO: Remove this after all the risc-v ima tests passes. \n", .{});
-                    if (addy +% RAM_IMAGE_OFFSET == 0x80001000) {
-                        _ = self.handlers.control_store(self, 0x80001000, rs2);
+                    if (@import("builtin").is_test and (addy == 0x80001000 or addy == 0x80002000)) {
+                        _ = self.handlers.control_store(self, addy, rs2);
                     }
+
+                    addy -%= RAM_IMAGE_OFFSET;
 
                     if (addy >= (self.ram.len - 3)) {
                         addy +%= RAM_IMAGE_OFFSET;
