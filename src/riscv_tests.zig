@@ -2,7 +2,7 @@ const std = @import("std");
 const rv32ima = @import("rv32ima.zig");
 
 const TEST_DIR = "riscv-tests-isa";
-const EXTENSIONS = [_]*const [1:0]u8{ "i", "m", "a" };
+const EXTENSIONS = [_]*const [1:0]u8{ "i", "m", "a", "f" };
 const RAM_SIZE: u32 = 1 * 1024 * 1024;
 
 test "riscv-tests-isa" {

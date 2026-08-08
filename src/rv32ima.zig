@@ -161,6 +161,8 @@ pub const Mode = enum {
 
 pub const NanoRV32IMA = struct {
     regs: [32]u32 = std.mem.zeroes([32]u32),
+    f_regs: [32]f32 = std.mem.zeroes([32]f32),
+
     pc: u32 = RAM_IMAGE_OFFSET,
     mstatus: u32 = 0,
     cyclel: u32 = 0,
@@ -176,6 +178,9 @@ pub const NanoRV32IMA = struct {
     mepc: u32 = 0,
     mtval: u32 = 0,
     mcause: u32 = 0,
+
+    // Float
+    fcsr: u32 = 0,
 
     mode: Mode = .machine,
     wfi: bool = false,
@@ -480,6 +485,126 @@ pub const NanoRV32IMA = struct {
                     rval = r.val;
                     trap = r.trap;
                 },
+                // RV32F
+                0x07 => { // FLW
+                    rd = 0;
+                    const rs1 = self.regs[ir.rs1];
+                    const addr = rs1 +% ir.i_imm() -% RAM_IMAGE_OFFSET;
+
+                    rval = switch (ir.funct3) {
+                        2 => load(u32, addr, self.ram),
+                        else => unreachable, // TODO: only for now.
+                    };
+
+                    self.f_regs[ir.rd] = @bitCast(rval);
+                },
+                0x27 => { // FSW
+                    rd = 0;
+                    const rs1: u32 = self.regs[ir.rs1];
+                    const f_rs2: f32 = self.f_regs[ir.rs2];
+
+                    var addy: u32 = ir.s_imm();
+                    if ((addy & 0x800) != 0) addy |= 0xFFFFF000;
+
+                    addy +%= rs1;
+                    addy -%= RAM_IMAGE_OFFSET;
+
+                    switch (ir.funct3) {
+                        2 => store(u32, addy, @bitCast(f_rs2), self.ram),
+                        else => unreachable, // TODO: only for now.
+                    }
+                },
+                0x53 => {
+                    rd = 0;
+                    var write_to_int: bool = false;
+
+                    const rs1 = self.regs[ir.rs1];
+                    var f_rs1 = self.f_regs[ir.rs1];
+                    var f_rs2 = self.f_regs[ir.rs2];
+
+                    var rvalf: f32 = 0;
+
+                    switch (ir.funct7) {
+                        // RV32F
+                        0x14 => {
+                            if (std.math.isNan(f_rs1) and (@as(u32, @bitCast(f_rs1)) & (1 << 22)) == 0) {
+                                self.fcsr |= 0x10;
+                                f_rs1 = std.math.nan(f32);
+                            }
+                            if (std.math.isNan(f_rs2) and (@as(u32, @bitCast(f_rs2)) & (1 << 22)) == 0) {
+                                self.fcsr |= 0x10;
+                                f_rs2 = std.math.nan(f32);
+                            }
+
+                            if (std.math.isNan(f_rs1) and std.math.isNan(f_rs2)) {
+                                rvalf = std.math.nan(f32);
+                            } else {
+                                // https://codeberg.org/ziglang/zig/issues/36420
+                                // these if statements are sort of useless.
+                                rvalf = switch (ir.funct3) {
+                                    0 => if ((f_rs1 == -0e0 and f_rs2 == 0e0) or (f_rs2 == -0e0 and f_rs1 == 0e0)) -0e0 else @min(f_rs1, f_rs2),
+                                    1 => if ((f_rs1 == -0e0 and f_rs2 == 0e0) or (f_rs2 == -0e0 and f_rs1 == 0e0)) 0e0 else @max(f_rs1, f_rs2),
+                                    else => {
+                                        trap = .illegal_instruction;
+                                        rval = @bitCast(ir);
+                                        self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+
+                                        break;
+                                    },
+                                };
+                            }
+                        },
+                        0x10 => { // FSGNJ
+                            switch (ir.funct3) {
+                                0 => rvalf = @bitCast(@as(u32, @bitCast(f_rs1)) & 0x7FFFFFFF | (@as(u32, @bitCast(f_rs2)) & (1 << 31))), // FSGNJ.S
+                                1 => rvalf = @bitCast(@as(u32, @bitCast(f_rs1)) & 0x7FFFFFFF | ~(@as(u32, @bitCast(f_rs2)) & (1 << 31))), // FSGNJN.S
+                                2 => rvalf = @bitCast(@as(u32, @bitCast(f_rs1)) & 0x7FFFFFFF | (@as(u32, @bitCast(f_rs1)) & (1 << 31)) ^ @as(u32, @bitCast(f_rs2)) & (1 << 31)), // FSGNJX.S
+
+                                else => {
+                                    trap = .illegal_instruction;
+                                    rval = @bitCast(ir);
+                                    self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+
+                                    break;
+                                },
+                            }
+                        },
+                        0x70 => {
+                            switch (ir.funct3) {
+                                0 => { // FMV.X.W
+                                    rvalf = f_rs1;
+                                    write_to_int = true;
+                                },
+                                // 1 => { // FCLASS.S
+
+                                // },
+                                else => {
+                                    trap = .illegal_instruction;
+                                    rval = @bitCast(ir);
+                                    self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+
+                                    break;
+                                },
+                            }
+                        },
+                        0x78 => { // FMV.W.X
+                            rvalf = @bitCast(rs1);
+                        },
+                        else => {
+                            trap = .illegal_instruction;
+                            rval = @bitCast(ir);
+                            self.handlers.post_exec(self, self.pc, @bitCast(ir), trap);
+
+                            break;
+                        },
+                    }
+
+                    if (write_to_int) {
+                        self.regs[ir.rd] = @bitCast(rvalf);
+                    } else {
+                        self.f_regs[ir.rd] = rvalf;
+                    }
+                },
                 else => {
                     trap = .illegal_instruction;
                     rval = @bitCast(ir);
@@ -516,6 +641,9 @@ pub const NanoRV32IMA = struct {
         const csrno = ir.i_imm();
 
         const rval: u32 = switch (csrno) {
+            0x001 => self.fcsr & 0x1F,
+            0x002 => (self.fcsr >> 5),
+            0x003 => self.fcsr,
             0x340 => self.mscratch,
             0x305 => self.mtvec,
             0x304 => self.mie,
@@ -546,6 +674,9 @@ pub const NanoRV32IMA = struct {
         };
 
         switch (csrno) {
+            0x001 => self.fcsr = (self.fcsr & 0xE0) | writeval & 0x1F,
+            0x002 => self.fcsr = (self.fcsr & 0x1F) | ((writeval & 0x7) << 5),
+            0x003 => self.fcsr = (writeval & 0xFF),
             0x340 => self.mscratch = writeval,
             0x305 => self.mtvec = writeval,
             0x304 => self.mie = (writeval & MIP_MIE_WRITE_MASK),
