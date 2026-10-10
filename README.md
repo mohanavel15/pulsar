@@ -1,10 +1,10 @@
-# mini-rv32ima.zig
-Tiny RISC-V emulator translated from C to Zig
-
-This project is Zig translation of [cnlohr/mini-rv32ima](https://github.com/cnlohr/mini-rv32ima)
+# Pulsar
+Pulsar is a tiny 32bit RISC-V emulator translated from C to Zig, based on [cnlohr/mini-rv32ima](https://github.com/cnlohr/mini-rv32ima).
 
 ## Current State
-The emulator currently passes 72/76 IMA test in [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
+This emulator passes 75/76 IMA test in [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
+
+Currently Working on adding floating point extension.
 ```
 $ zig test src/riscv_tests.zig
 ==========rv32i==========

@@ -66,7 +66,7 @@ fn load_and_run(io: std.Io, allocator: std.mem.Allocator, path: []u8) Result {
         handlers.to_host_address = 0x80002000;
     }
 
-    var core = rv32ima.NanoRV32IMA.init(handlers.handlers(), ram_image);
+    var core = rv32ima.Pulsar.init(handlers.handlers(), ram_image);
 
     for (0..10240) |count| {
         if (handlers.received_output) break;
@@ -89,7 +89,7 @@ const TestHandler = struct {
 
     const Self = @This();
 
-    fn control_store(ptr: *anyopaque, _: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
+    fn control_store(ptr: *anyopaque, _: *rv32ima.Pulsar, addy: u32, val: u32) u32 {
         var self: *Self = @ptrCast(@alignCast(ptr));
 
         if (addy == self.to_host_address) {
@@ -100,12 +100,12 @@ const TestHandler = struct {
         return 0;
     }
 
-    fn post_exec(_: *anyopaque, _: *rv32ima.NanoRV32IMA, _: u32, _: u32, _: ?rv32ima.Traps) void {}
-    fn control_load(_: *anyopaque, _: *rv32ima.NanoRV32IMA, _: u32) u32 {
+    fn post_exec(_: *anyopaque, _: *rv32ima.Pulsar, _: u32, _: u32, _: ?rv32ima.Traps) void {}
+    fn control_load(_: *anyopaque, _: *rv32ima.Pulsar, _: u32) u32 {
         return 0;
     }
-    fn other_csr_write(_: *anyopaque, _: *rv32ima.NanoRV32IMA, _: []u8, _: u16, _: u32) void {}
-    fn other_csr_read(_: *anyopaque, _: *rv32ima.NanoRV32IMA, _: []u8, _: u16) i32 {
+    fn other_csr_write(_: *anyopaque, _: *rv32ima.Pulsar, _: []u8, _: u16, _: u32) void {}
+    fn other_csr_read(_: *anyopaque, _: *rv32ima.Pulsar, _: []u8, _: u16) i32 {
         return 0;
     }
 

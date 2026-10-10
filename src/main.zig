@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
 
     var handlers = DefaultHandler{};
 
-    var core = rv32ima.NanoRV32IMA.init(handlers.handlers(), ram_image);
+    var core = rv32ima.Pulsar.init(handlers.handlers(), ram_image);
     core.regs[10] = 0x00;
     core.regs[11] = rv32ima.RAM_IMAGE_OFFSET + dtb_offset;
 
@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
 const DefaultHandler = struct {
     const Self = @This();
 
-    fn post_exec(_: *anyopaque, core: *rv32ima.NanoRV32IMA, pc: u32, ir: u32, trap: ?rv32ima.Traps) void {
+    fn post_exec(_: *anyopaque, core: *rv32ima.Pulsar, pc: u32, ir: u32, trap: ?rv32ima.Traps) void {
         _ = &core;
         _ = &pc;
         _ = &ir;
@@ -82,7 +82,7 @@ const DefaultHandler = struct {
         // std.debug.print("PC: {x:0>8} | IR: {x:0>8} | TRAP: {s}\n", .{ pc, ir, if (trap) |t| @tagName(t) else "null" });
     }
 
-    fn control_store(_: *anyopaque, core: *rv32ima.NanoRV32IMA, addy: u32, val: u32) u32 {
+    fn control_store(_: *anyopaque, core: *rv32ima.Pulsar, addy: u32, val: u32) u32 {
         switch (addy) {
             0x80001000 => {
                 if (val == 1) {
@@ -108,7 +108,7 @@ const DefaultHandler = struct {
         return 0;
     }
 
-    fn control_load(_: *anyopaque, core: *rv32ima.NanoRV32IMA, addy: u32) u32 {
+    fn control_load(_: *anyopaque, core: *rv32ima.Pulsar, addy: u32) u32 {
         switch (addy) {
             0x10000005 => return 0x60,
             0x1100bffc => return core.timerh,
@@ -121,14 +121,14 @@ const DefaultHandler = struct {
         return 0;
     }
 
-    fn other_csr_write(_: *anyopaque, core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16, value: u32) void {
+    fn other_csr_write(_: *anyopaque, core: *rv32ima.Pulsar, image: []u8, csrno: u16, value: u32) void {
         _ = core;
         _ = image;
         _ = csrno;
         _ = value;
     }
 
-    fn other_csr_read(_: *anyopaque, core: *rv32ima.NanoRV32IMA, image: []u8, csrno: u16) i32 {
+    fn other_csr_read(_: *anyopaque, core: *rv32ima.Pulsar, image: []u8, csrno: u16) i32 {
         _ = core;
         _ = image;
         _ = csrno;
@@ -149,7 +149,7 @@ const DefaultHandler = struct {
     }
 };
 
-fn dump_states(core: *rv32ima.NanoRV32IMA, image: []u8) void {
+fn dump_states(core: *rv32ima.Pulsar, image: []u8) void {
     std.debug.print("PC: {x:0>8} ", .{core.pc});
 
     const pc_offset = core.pc - rv32ima.RAM_IMAGE_OFFSET;
